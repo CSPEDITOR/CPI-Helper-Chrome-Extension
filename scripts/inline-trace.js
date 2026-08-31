@@ -220,26 +220,29 @@ async function clickTrace(e) {
               },
             ];
             if (targetElements[n].Error) {
+              const errText = targetElements[n].Error;
+              const adapterType = targetElements[n].AdapterType || null;
+              const aiContext = {
+                errorMessage: errText,
+                stackTrace: errText,
+                adapterType: adapterType,
+                integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
+              };
+
               let innerContent = document.createElement("div");
               innerContent.classList.add("cpiHelper_traceText");
               let errPre = document.createElement("pre");
-              errPre.innerText = targetElements[n].Error;
+              errPre.innerText = errText;
               innerContent.appendChild(errPre);
               
               let aiBtn = document.createElement("button");
-              aiBtn.className = "ui purple button mini";
+              aiBtn.className = "ui purple button mini cpiHelper_getAiRecommendationBtn";
               aiBtn.style.marginTop = "10px";
-              aiBtn.innerHTML = '<i class="magic icon"></i> Get AI recommendation';
-              const errText = targetElements[n].Error;
-              const adapterType = targetElements[n].AdapterType || null;
+              aiBtn.innerHTML = '<i class="magic icon"></i> Fix with AI';
+              aiBtn.title = "Show recommended fixes for this CPI error";
               aiBtn.onclick = () => {
                 if (typeof GeminiAI !== "undefined") {
-                  GeminiAI.handleGetRecommendation({
-                    errorMessage: errText,
-                    stackTrace: errText,
-                    adapterType: adapterType,
-                    integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
-                  });
+                  GeminiAI.handleGetRecommendation(aiContext);
                 }
               };
               innerContent.appendChild(aiBtn);
@@ -247,6 +250,25 @@ async function clickTrace(e) {
               objects.push({
                 label: "Error",
                 content: innerContent,
+                active: false,
+              });
+
+              objects.push({
+                label: "Fix with AI",
+                content: async () => {
+                  if (typeof GeminiAI !== "undefined") {
+                    GeminiAI.handleGetRecommendation(aiContext);
+                  }
+                  return `
+                    <div class="ui icon message">
+                      <i class="sync alternate loading icon"></i>
+                      <div class="content">
+                        <div class="header">Fix with AI</div>
+                        <p>Opening recommended fixes and resolution steps...</p>
+                      </div>
+                    </div>
+                  `;
+                },
                 active: false,
               });
             }

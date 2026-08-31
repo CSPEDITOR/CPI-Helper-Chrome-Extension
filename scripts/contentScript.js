@@ -1538,7 +1538,7 @@ async function popupTable(message) {
   }
   popupHTML += `<tr><td colspan="2" style="text-align: center; padding: 6px;">
     <button class="ui purple button compact fluid cpiHelper_getAiRecommendationBtn" data-message-guid="${message}">
-      <i class="magic icon"></i> Get AI recommendation
+      <i class="magic icon"></i> Fix with AI
     </button>
   </td></tr>`;
   popupHTML += `</tbody></table>`;

@@ -322,58 +322,29 @@ Please generate structured JSON with:
     return lastErrorResult || { errorState: "api_error", message: "No supported Gemini model found for generateContent." };
   }
 
-  /**
-   * Renders the Sanitization Preview Modal before invoking Gemini
-   */
-  function showSanitizationPreviewModal(rawContext, onConfirm) {
-    const sanitizedData = sanitizeErrorData(rawContext);
-    const previewJsonText = JSON.stringify(sanitizedData, null, 2);
-
-    const modalContent = document.createElement("div");
-    modalContent.innerHTML = `
-      <div class="ui warning message">
-        <div class="header"><i class="shield alternate icon"></i> Data Sanitization Preview</div>
-        <p>Before sending data to Gemini, credentials (tokens, passwords, CSRF tokens, headers) have been sanitized and message payloads are excluded.</p>
-      </div>
-
-      <h4 class="ui header">Sanitized Payload to be sent to Gemini:</h4>
-      <div class="ui segment" style="max-height: 250px; overflow-y: auto; background: #1b1c1d; color: #00ff66; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">
-${htmlEscape(previewJsonText)}
-      </div>
-
-      <div class="ui hidden divider"></div>
-      <div class="ui right aligned container">
-        <button id="cpiHelper_cancelGeminiPreview" class="ui button">Cancel</button>
-        <button id="cpiHelper_confirmGeminiPreview" class="ui purple button"><i class="paper plane icon"></i> Send to Gemini</button>
+  async function analyzeAndRender(rawContext, sanitizedData) {
+    const loadingDiv = document.createElement("div");
+    loadingDiv.innerHTML = `
+      <div class="ui icon message">
+        <i class="sync alternate loading icon"></i>
+        <div class="content">
+          <div class="header">Fix with AI</div>
+          <p>Evaluating CPI logs, stack trace, and context for recommended fixes...</p>
+        </div>
       </div>
     `;
 
-    showBigPopup(modalContent, "AI Recommendation - Data Sanitization Preview", {
+    showBigPopup(loadingDiv, "Fix with AI", {
       fullscreen: false,
-      large: true,
-      closeText: "Cancel"
+      closeText: "Close"
     });
 
-    setTimeout(() => {
-      const confirmBtn = document.getElementById("cpiHelper_confirmGeminiPreview");
-      const cancelBtn = document.getElementById("cpiHelper_cancelGeminiPreview");
-
-      if (confirmBtn) {
-        confirmBtn.onclick = () => {
-          $("#cpiHelper_semanticui_modal").modal("hide");
-          onConfirm(sanitizedData);
-        };
-      }
-      if (cancelBtn) {
-        cancelBtn.onclick = () => {
-          $("#cpiHelper_semanticui_modal").modal("hide");
-        };
-      }
-    }, 100);
+    const result = await callApi(sanitizedData, await getKey());
+    renderRecommendationResult(result, rawContext, sanitizedData);
   }
 
   /**
-   * Main entry point when user clicks "Get AI recommendation"
+   * Main entry point when user clicks "Fix with AI"
    */
   async function handleGetRecommendation(rawContext) {
     let apiKey = await getKey();
@@ -386,31 +357,7 @@ ${htmlEscape(previewJsonText)}
       }
     }
 
-    // Step 1: Show Sanitization Preview Modal
-    showSanitizationPreviewModal(rawContext, async (sanitizedData) => {
-      // Step 2: Show Loading Modal
-      const loadingDiv = document.createElement("div");
-      loadingDiv.innerHTML = `
-        <div class="ui icon message">
-          <i class="sync alternate loading icon"></i>
-          <div class="content">
-            <div class="header">Analyzing Error with Gemini AI</div>
-            <p>Evaluating CPI logs, stack trace, and context for recommendations...</p>
-          </div>
-        </div>
-      `;
-
-      showBigPopup(loadingDiv, "AI Error Recommendation", {
-        fullscreen: false,
-        closeText: "Close"
-      });
-
-      // Step 3: Execute API Call
-      const result = await callApi(sanitizedData, apiKey);
-
-      // Step 4: Render Response or Error State
-      renderRecommendationResult(result, rawContext, sanitizedData);
-    });
+    await analyzeAndRender(rawContext, sanitizeErrorData(rawContext));
   }
 
   /**
@@ -444,7 +391,7 @@ ${htmlEscape(previewJsonText)}
         <button id="cpiHelper_retryGeminiBtn" class="ui positive button"><i class="redo icon"></i> Retry</button>
       `;
 
-      showBigPopup(container, "AI Error Recommendation - Error", { fullscreen: false, closeText: "Close" });
+      showBigPopup(container, "Fix with AI - Error", { fullscreen: false, closeText: "Close" });
 
       setTimeout(() => {
         const updateKeyBtn = document.getElementById("cpiHelper_updateGeminiKeyBtn");
@@ -485,7 +432,7 @@ ${htmlEscape(previewJsonText)}
 
     container.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-        <h3 class="ui header" style="margin: 0;"><i class="magic icon" style="color: #a333c8;"></i> AI Error Analysis</h3>
+        <h3 class="ui header" style="margin: 0;"><i class="magic icon" style="color: #a333c8;"></i> Fix with AI</h3>
         <div>
           <span class="ui ${confidenceColor} label"><i class="tachometer alternate icon"></i> Confidence: ${confidenceText}</span>
           ${result.usedModel ? `<span class="ui basic label" style="margin-left: 5px;"><i class="cpu icon"></i> Model: ${htmlEscape(result.usedModel)}</span>` : ""}
@@ -525,7 +472,7 @@ ${htmlEscape(previewJsonText)}
       </div>
     `;
 
-    showBigPopup(container, "AI Error Recommendation - Gemini", {
+    showBigPopup(container, "Fix with AI", {
       fullscreen: false,
       large: true,
       closeText: "Close"
@@ -549,7 +496,7 @@ ${htmlEscape(previewJsonText)}
     saveModelPreference,
     fetchAvailableModels,
     sanitizeErrorData,
-    showSanitizationPreviewModal,
+    analyzeAndRender,
     handleGetRecommendation
   };
 })();
