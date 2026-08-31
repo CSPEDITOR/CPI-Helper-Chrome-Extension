@@ -222,7 +222,27 @@ async function clickTrace(e) {
             if (targetElements[n].Error) {
               let innerContent = document.createElement("div");
               innerContent.classList.add("cpiHelper_traceText");
-              innerContent.innerText = targetElements[n].Error;
+              let errPre = document.createElement("pre");
+              errPre.innerText = targetElements[n].Error;
+              innerContent.appendChild(errPre);
+              
+              let aiBtn = document.createElement("button");
+              aiBtn.className = "ui purple button mini";
+              aiBtn.style.marginTop = "10px";
+              aiBtn.innerHTML = '<i class="magic icon"></i> Get AI recommendation';
+              const errText = targetElements[n].Error;
+              const adapterType = targetElements[n].AdapterType || null;
+              aiBtn.onclick = () => {
+                if (typeof GeminiAI !== "undefined") {
+                  GeminiAI.handleGetRecommendation({
+                    errorMessage: errText,
+                    stackTrace: errText,
+                    adapterType: adapterType,
+                    integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
+                  });
+                }
+              };
+              innerContent.appendChild(aiBtn);
               innerContent.style.display = "block";
               objects.push({
                 label: "Error",

@@ -626,3 +626,25 @@ fieldset {
 #cpiHelper_sidebar_refresh_icon i {
   animation-fill-mode: forwards;
 }
+
+/* Gemini AI Error Recommendation Styles */
+.cpiHelper_gemini_container {
+  padding: 10px;
+  font-family: inherit;
+}
+
+.cpiHelper_gemini_container .ui.header {
+  font-weight: 600;
+}
+
+.cpiHelper_getAiRecommendationBtn {
+  background-color: #a333c8 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  transition: background-color 0.2s ease !important;
+}
+
+.cpiHelper_getAiRecommendationBtn:hover {
+  background-color: #8e2bb3 !important;
+}
+

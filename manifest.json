@@ -15,7 +15,8 @@
     "https://*.hana.ondemand.com/itspaces",
     "https://*.platform.sapcloud.cn/itspaces",
     "https://*.hana.ondemand.com/shell",
-    "https://*.platform.sapcloud.cn/shell"
+    "https://*.platform.sapcloud.cn/shell",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "permissions": ["storage"],
   "content_scripts": [
@@ -76,6 +77,7 @@
         "/plugins/connectivityCredentialsManager.js",
         "/plugins/zz_developer_tools.js",
         "/plugins/iFlowSearcher.js",
+        "/scripts/gemini-ai.js",
         "/scripts/ui.js",
         "/scripts/logs.js",
         "/whatsNew/whatsNewLog.js",

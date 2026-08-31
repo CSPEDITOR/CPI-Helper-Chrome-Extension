@@ -1536,6 +1536,11 @@ async function popupTable(message) {
     }
     popupHTML += `</div></td></tr>`;
   }
+  popupHTML += `<tr><td colspan="2" style="text-align: center; padding: 6px;">
+    <button class="ui purple button compact fluid cpiHelper_getAiRecommendationBtn" data-message-guid="${message}">
+      <i class="magic icon"></i> Get AI recommendation
+    </button>
+  </td></tr>`;
   popupHTML += `</tbody></table>`;
   return popupHTML;
 }
@@ -1548,7 +1553,7 @@ function apireserror(message) {
     class: $("html").hasClass("sapUiTheme-sap_horizon_dark") ? " ch_dark " : "",
     onVisible: async () =>
       popupTable(message)
-        .then((message) => {
+        .then((messageHtml) => {
           $(".ui.toast").toast("close");
           $.toast({
             closeIcon: true,
@@ -1557,11 +1562,31 @@ function apireserror(message) {
             progressUp: true,
             position: "bottom right",
             class: $("html").hasClass("sapUiTheme-sap_horizon_dark") ? " ch_dark " : "",
-            displayTime: 5000,
+            displayTime: 10000,
             onRemove: () => {
               document.querySelectorAll(".cpiHelper_sidebar_iconbutton").forEach((i) => i.classList.remove("cpiHelper_sidebar_iconbutton"));
             },
-            message: message,
+            message: messageHtml,
+            onVisible: () => {
+              document.querySelectorAll(".cpiHelper_getAiRecommendationBtn").forEach((btn) => {
+                btn.onclick = async (e) => {
+                  e.stopPropagation();
+                  const msgGuid = e.currentTarget.getAttribute("data-message-guid") || message;
+                  const errData = await errorPopupOpen(msgGuid);
+                  if (typeof GeminiAI !== "undefined") {
+                    GeminiAI.handleGetRecommendation({
+                      errorMessage: errData.errors.join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,
+                      status: errData.status,
+                      customStatus: errData.customstatus,
+                      stackTrace: errData.errors.join("\n"),
+                      integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
+                    });
+                  } else {
+                    alert("Gemini AI module is loading or unavailable.");
+                  }
+                };
+              });
+            }
           });
         })
         .catch((error) => {
