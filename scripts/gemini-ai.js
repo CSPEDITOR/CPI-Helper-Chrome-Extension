@@ -6,6 +6,9 @@
 var GeminiAI = (function () {
   const KEY_STORAGE_KEY = "geminiApiKey";
   const MODEL_STORAGE_KEY = "geminiModel";
+  const AI_PROMPT_VERSION = "1";
+
+  const inFlightRequests = new Map();
 
   const FALLBACK_MODELS = [
     "gemini-2.0-flash",
@@ -322,7 +325,7 @@ Please generate structured JSON with:
     return lastErrorResult || { errorState: "api_error", message: "No supported Gemini model found for generateContent." };
   }
 
-  async function analyzeAndRender(rawContext, sanitizedData) {
+  function showAnalysisLoading() {
     const loadingDiv = document.createElement("div");
     loadingDiv.innerHTML = `
       <div class="ui icon message">
@@ -338,32 +341,106 @@ Please generate structured JSON with:
       fullscreen: false,
       closeText: "Close"
     });
+  }
 
-    const result = await callApi(sanitizedData, await getKey());
-    renderRecommendationResult(result, rawContext, sanitizedData);
+  function getCacheModule() {
+    return typeof AiFixCache !== "undefined" ? AiFixCache : null;
+  }
+
+  /**
+   * Returns a parsed AI recommendation from persistent cache or Gemini.
+   * Callers receive the same result shape on both paths and do not need to
+   * coordinate cache reads, writes, or concurrent requests.
+   */
+  async function getAiFix(rawContext, options = {}) {
+    const sanitizedData = options.sanitizedData || sanitizeErrorData(rawContext);
+    const modelPreference = await getModelPreference();
+    const cache = getCacheModule();
+    let signature = null;
+
+    if (cache) {
+      try {
+        signature = await cache.createAiFixSignature(sanitizedData, modelPreference, AI_PROMPT_VERSION);
+        if (!options.forceRefresh) {
+          const cachedEntry = await cache.getCachedAiFix(signature, {
+            modelPreference,
+            promptVersion: AI_PROMPT_VERSION
+          });
+          if (cachedEntry) {
+            return {
+              ...cachedEntry.response,
+              fromCache: true,
+              generatedAt: cachedEntry.createdAt
+            };
+          }
+        }
+      } catch (error) {
+        console.warn("GeminiAI: Cache lookup failed; continuing with Gemini.", error);
+        signature = null;
+      }
+    }
+
+    const requestKey = signature || `${modelPreference}\n${JSON.stringify(sanitizedData)}`;
+    if (inFlightRequests.has(requestKey)) {
+      if (options.onBeforeRequest) options.onBeforeRequest();
+      return inFlightRequests.get(requestKey);
+    }
+
+    const request = (async () => {
+      let apiKey = await getKey();
+      if (!apiKey) apiKey = await promptKeySetup();
+      if (!apiKey) return { errorState: "missing_key", message: "Gemini API key is required." };
+
+      if (options.onBeforeRequest) options.onBeforeRequest();
+      const result = await callApi(sanitizedData, apiKey);
+      if (result.success) {
+        const generatedAt = Date.now();
+        if (cache && signature) {
+          await cache.saveCachedAiFix(signature, result, {
+            model: result.usedModel || modelPreference,
+            modelPreference,
+            promptVersion: AI_PROMPT_VERSION
+          });
+        }
+        return { ...result, fromCache: false, generatedAt };
+      }
+      return result;
+    })();
+
+    inFlightRequests.set(requestKey, request);
+    try {
+      return await request;
+    } finally {
+      if (inFlightRequests.get(requestKey) === request) inFlightRequests.delete(requestKey);
+    }
+  }
+
+  async function analyzeAndRender(rawContext, sanitizedData, options = {}) {
+    const result = await getAiFix(rawContext, {
+      forceRefresh: options.forceRefresh === true,
+      sanitizedData,
+      onBeforeRequest: showAnalysisLoading
+    });
+
+    if (result.errorState === "missing_key") {
+      showToast("Gemini API key is required to get AI recommendation.", "Key Missing", "warning");
+      return;
+    }
+
+    renderRecommendationResult(result, rawContext, sanitizedData, options);
   }
 
   /**
    * Main entry point when user clicks "Fix with AI"
    */
-  async function handleGetRecommendation(rawContext) {
-    let apiKey = await getKey();
-
-    if (!apiKey) {
-      apiKey = await promptKeySetup();
-      if (!apiKey) {
-        showToast("Gemini API key is required to get AI recommendation.", "Key Missing", "warning");
-        return;
-      }
-    }
-
-    await analyzeAndRender(rawContext, sanitizeErrorData(rawContext));
+  async function handleGetRecommendation(rawContext, options = {}) {
+    await analyzeAndRender(rawContext, sanitizeErrorData(rawContext), options);
   }
 
   /**
    * Renders the recommendation results or error states in the big popup modal
    */
-  function renderRecommendationResult(result, rawContext, sanitizedData) {
+  function renderRecommendationResult(result, rawContext, sanitizedData, options = {}) {
     const container = document.createElement("div");
     container.className = "cpiHelper_gemini_container";
 
@@ -407,7 +484,7 @@ Please generate structured JSON with:
         }
         if (retryBtn) {
           retryBtn.onclick = () => {
-            handleGetRecommendation(rawContext);
+            handleGetRecommendation(rawContext, { forceRefresh: options.forceRefresh === true });
           };
         }
       }, 100);
@@ -430,12 +507,17 @@ Please generate structured JSON with:
       .map((w) => `<div class="ui warning message" style="margin-top: 5px;"><i class="warning circle icon"></i> ${htmlEscape(w)}</div>`)
       .join("");
 
+    const cachedLabel = result.fromCache
+      ? `<span class="ui basic label" style="margin-left: 5px;" title="Generated ${htmlEscape(new Date(result.generatedAt).toLocaleString())}"><i class="history icon"></i> Cached ${htmlEscape(formatAge(result.generatedAt))}</span>`
+      : "";
+
     container.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
         <h3 class="ui header" style="margin: 0;"><i class="magic icon" style="color: #a333c8;"></i> Fix with AI</h3>
         <div>
           <span class="ui ${confidenceColor} label"><i class="tachometer alternate icon"></i> Confidence: ${confidenceText}</span>
           ${result.usedModel ? `<span class="ui basic label" style="margin-left: 5px;"><i class="cpu icon"></i> Model: ${htmlEscape(result.usedModel)}</span>` : ""}
+          ${cachedLabel}
         </div>
       </div>
 
@@ -468,7 +550,7 @@ Please generate structured JSON with:
 
       <div class="ui hidden divider"></div>
       <div style="text-align: right;">
-        <button id="cpiHelper_reanalyzeGeminiBtn" class="ui compact button"><i class="sync icon"></i> Re-analyze</button>
+        <button id="cpiHelper_reanalyzeGeminiBtn" class="ui compact button"><i class="sync icon"></i> Regenerate with AI</button>
       </div>
     `;
 
@@ -482,10 +564,20 @@ Please generate structured JSON with:
       const reanalyzeBtn = document.getElementById("cpiHelper_reanalyzeGeminiBtn");
       if (reanalyzeBtn) {
         reanalyzeBtn.onclick = () => {
-          handleGetRecommendation(rawContext);
+          handleGetRecommendation(rawContext, { forceRefresh: true });
         };
       }
     }, 100);
+  }
+
+  function formatAge(timestamp) {
+    const elapsed = Math.max(0, Date.now() - timestamp);
+    const minutes = Math.floor(elapsed / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
   }
 
   return {
@@ -496,6 +588,7 @@ Please generate structured JSON with:
     saveModelPreference,
     fetchAvailableModels,
     sanitizeErrorData,
+    getAiFix,
     analyzeAndRender,
     handleGetRecommendation
   };
