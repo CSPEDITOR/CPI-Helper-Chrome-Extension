@@ -276,7 +276,7 @@ function addTenantSettings() {
             <div data=true class="ui toggle basic ${!cpi_help_mode ? "active" : ""} button">Compress</div>
             <div data=false class="ui toggle basic ${cpi_help_mode ? "active" : ""} button">Expand</div>
         </div> 
-        <div class='ui segment ${cpi_help_mode ? "" : "hidden"}'>
+        <div id="cpiHelpDetails" class='ui segment ${cpi_help_mode ? "" : "hidden"}'>
 			<div class="ui segment">
 				<div class="ui medium header" style="color:var(--cpi-dark-green)">General Settings</div>
 				<section>
@@ -320,25 +320,43 @@ function addTenantSettings() {
                 <tr><td>Compact</td> <td>Less</td> <td>Auto-layout</td></tr>
             </table>
         </div>
-        <div class="ui labeled input fluid" style="margin-bottom: 10px;">
-            <div class="ui label">Gemini API Key</div>
-            <input type="password" id="geminiApiKeyInput" placeholder="Enter your Gemini API key" />
-            <button class="ui icon button" id="toggleGeminiKeyVisibility" type="button" title="Show/Hide API Key"><i class="eye icon"></i></button>
         </div>
-        <div class="ui labeled input fluid" style="margin-bottom: 10px;">
-            <div class="ui label">Gemini Model</div>
-            <select id="geminiModelSelect" class="ui selection dropdown" style="width: 100%;">
-                <option value="auto">Auto-detect available model (Recommended)</option>
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash (Latest)</option>
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-            </select>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <button class="ui purple button" id="saveGeminiKeyBtn" type="button"><i class="save icon"></i> Save Key</button>
-            <button class="ui red basic button" id="removeGeminiKeyBtn" type="button"><i class="trash icon"></i> Remove Key</button>
-            <span id="geminiKeyStatus" class="ui label">Checking...</span>
+        <div class="ui segment cpiHelper_aiSettings">
+            <h3 class="ui header"><i class="magic icon"></i> AI Settings</h3>
+            <h4 class="ui dividing header">Gemini API Key</h4>
+            <div id="geminiSavedKeyState" class="hidden">
+                <div class="ui labeled input fluid cpiHelper_geminiField">
+                    <div class="ui label">Saved Key</div>
+                    <input type="text" id="geminiMaskedKey" readonly aria-label="Masked Gemini API key" />
+                </div>
+                <div class="cpiHelper_geminiActions">
+                    <button class="ui purple button" id="changeGeminiKeyBtn" type="button"><i class="key icon"></i> Change API Key</button>
+                    <button class="ui red basic button" id="removeGeminiKeyBtn" type="button"><i class="trash icon"></i> Remove API Key</button>
+                    <button class="ui basic button" id="testGeminiConnectionBtn" type="button"><i class="plug icon"></i> Test Connection</button>
+                </div>
+            </div>
+            <div id="geminiKeyEditor" class="hidden">
+                <div class="ui labeled input fluid cpiHelper_geminiField">
+                    <div class="ui label" id="geminiKeyInputLabel">API Key</div>
+                    <input type="password" id="geminiApiKeyInput" placeholder="Enter your Gemini API key" autocomplete="off" />
+                </div>
+                <p class="cpiHelper_geminiHelp">The key is tested with Gemini before it is saved. An existing key is kept if validation fails.</p>
+                <div class="cpiHelper_geminiActions">
+                    <button class="ui purple button" id="saveGeminiKeyBtn" type="button"><i class="check icon"></i> Add API Key</button>
+                    <button class="ui basic button hidden" id="cancelGeminiKeyChangeBtn" type="button">Cancel</button>
+                </div>
+            </div>
+            <div id="geminiKeyFeedback" class="ui message hidden" role="status" aria-live="polite"></div>
+            <div class="ui labeled input fluid cpiHelper_geminiField">
+                <div class="ui label">Gemini Model</div>
+                <select id="geminiModelSelect" class="ui selection dropdown">
+                    <option value="auto">Auto-detect available model (Recommended)</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash (Latest)</option>
+                    <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                </select>
+            </div>
         </div>
     </div>
     `;
@@ -379,7 +397,7 @@ function addTenantSettings() {
   document.querySelector("#cpi_help_mode").addEventListener("click", () => {
     document.querySelectorAll("#cpi_help_mode>.button").forEach((e) => e.classList.toggle("active"));
     localStorage.setItem("cpi_help_mode", document.querySelector("#cpi_help_mode>.active").getAttribute("data") === "true");
-    document.querySelector("#tenantSettings > div:nth-child(4) > div.ui.segment").classList.toggle("hidden"); //#tenantSettings>div>div:has(table)
+    document.getElementById("cpiHelpDetails").classList.toggle("hidden");
   });
   //reset color btn
   document.querySelector("#tenantSettings > div >div > button").addEventListener("click", async () => {
@@ -416,74 +434,139 @@ function addTenantSettings() {
 
   // Gemini API Key Settings logic
   const geminiInput = document.getElementById("geminiApiKeyInput");
-  const geminiStatus = document.getElementById("geminiKeyStatus");
   const saveGeminiBtn = document.getElementById("saveGeminiKeyBtn");
   const removeGeminiBtn = document.getElementById("removeGeminiKeyBtn");
-  const toggleVisibilityBtn = document.getElementById("toggleGeminiKeyVisibility");
+  const changeGeminiBtn = document.getElementById("changeGeminiKeyBtn");
+  const testGeminiBtn = document.getElementById("testGeminiConnectionBtn");
+  const cancelGeminiBtn = document.getElementById("cancelGeminiKeyChangeBtn");
+  const savedKeyState = document.getElementById("geminiSavedKeyState");
+  const keyEditor = document.getElementById("geminiKeyEditor");
+  const maskedKey = document.getElementById("geminiMaskedKey");
+  const keyInputLabel = document.getElementById("geminiKeyInputLabel");
+  const geminiFeedback = document.getElementById("geminiKeyFeedback");
+  const geminiActionButtons = [saveGeminiBtn, removeGeminiBtn, changeGeminiBtn, testGeminiBtn, cancelGeminiBtn].filter(Boolean);
 
-  function updateGeminiStatusUI(key) {
-    if (geminiStatus && geminiInput) {
-      if (key && key.trim()) {
-        geminiInput.value = key;
-        const masked = key.length > 8 ? "••••••••" + key.slice(-4) : "••••••••";
-        geminiStatus.textContent = "Saved: " + masked;
-        geminiStatus.className = "ui green label";
-      } else {
-        geminiInput.value = "";
-        geminiStatus.textContent = "No Key Saved";
-        geminiStatus.className = "ui grey label";
-      }
+  let hasGeminiKey = false;
+
+  function showGeminiFeedback(message, type) {
+    geminiFeedback.textContent = message;
+    geminiFeedback.className = `ui ${type || "info"} message`;
+  }
+
+  function clearGeminiFeedback() {
+    geminiFeedback.textContent = "";
+    geminiFeedback.className = "ui message hidden";
+  }
+
+  function setGeminiBusy(isBusy) {
+    geminiActionButtons.forEach((button) => {
+      button.disabled = isBusy;
+      button.classList.toggle("loading", isBusy && button === document.activeElement);
+    });
+  }
+
+  function showGeminiKeyEditor(isChanging) {
+    savedKeyState.classList.add("hidden");
+    keyEditor.classList.remove("hidden");
+    geminiInput.value = "";
+    keyInputLabel.textContent = isChanging ? "New API Key" : "API Key";
+    saveGeminiBtn.innerHTML = isChanging ? '<i class="check icon"></i> Save New API Key' : '<i class="check icon"></i> Add API Key';
+    cancelGeminiBtn.classList.toggle("hidden", !isChanging);
+    if (isChanging) geminiInput.focus();
+  }
+
+  async function refreshGeminiKeyUI() {
+    const status = await GeminiAI.getKeyStatus();
+    hasGeminiKey = status.exists;
+    geminiInput.value = "";
+    maskedKey.value = status.maskedKey;
+    if (status.exists) {
+      keyEditor.classList.add("hidden");
+      savedKeyState.classList.remove("hidden");
+    } else {
+      showGeminiKeyEditor(false);
     }
   }
 
   const geminiModelSelect = document.getElementById("geminiModelSelect");
 
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(["geminiApiKey", "geminiModel"], (res) => {
-      updateGeminiStatusUI(res.geminiApiKey);
-      if (geminiModelSelect && res.geminiModel) {
-        geminiModelSelect.value = res.geminiModel;
-      }
-    });
-  }
+  refreshGeminiKeyUI().catch(() => showGeminiFeedback("Unable to read Gemini settings.", "negative"));
+  GeminiAI.getModelPreference().then((model) => {
+    if (geminiModelSelect) geminiModelSelect.value = model;
+  });
 
   if (geminiModelSelect) {
     geminiModelSelect.addEventListener("change", () => {
-      chrome.storage.local.set({ geminiModel: geminiModelSelect.value });
+      GeminiAI.saveModelPreference(geminiModelSelect.value);
     });
   }
 
   if (saveGeminiBtn) {
-    saveGeminiBtn.addEventListener("click", () => {
+    saveGeminiBtn.addEventListener("click", async () => {
       const val = geminiInput ? geminiInput.value.trim() : "";
       if (!val) {
-        alert("Please enter a valid Gemini API key.");
+        showGeminiFeedback("Enter a Gemini API key.", "warning");
         return;
       }
-      chrome.storage.local.set({ geminiApiKey: val }, () => {
-        updateGeminiStatusUI(val);
-        alert("Gemini API Key saved successfully to chrome.storage.local!");
-      });
+
+      clearGeminiFeedback();
+      setGeminiBusy(true);
+      const result = await GeminiAI.validateAndSaveKey(val);
+      geminiInput.value = "";
+      setGeminiBusy(false);
+
+      if (!result.success) {
+        showGeminiFeedback(`${result.message}${hasGeminiKey ? " Your existing API key was not changed." : ""}`, "negative");
+        return;
+      }
+
+      await refreshGeminiKeyUI();
+      showGeminiFeedback(result.message, "positive");
     });
   }
 
   if (removeGeminiBtn) {
-    removeGeminiBtn.addEventListener("click", () => {
-      chrome.storage.local.remove(["geminiApiKey"], () => {
-        updateGeminiStatusUI("");
-        alert("Gemini API Key removed from chrome.storage.local.");
-      });
+    removeGeminiBtn.addEventListener("click", async () => {
+      setGeminiBusy(true);
+      try {
+        await GeminiAI.removeKey();
+        await refreshGeminiKeyUI();
+        showGeminiFeedback("Gemini API key removed.", "positive");
+      } catch (error) {
+        showGeminiFeedback("Unable to remove the Gemini API key.", "negative");
+      } finally {
+        setGeminiBusy(false);
+      }
     });
   }
 
-  if (toggleVisibilityBtn && geminiInput) {
-    toggleVisibilityBtn.addEventListener("click", () => {
-      const isPassword = geminiInput.type === "password";
-      geminiInput.type = isPassword ? "text" : "password";
-      const icon = toggleVisibilityBtn.querySelector("i");
-      if (icon) {
-        icon.className = isPassword ? "eye slash icon" : "eye icon";
-      }
+  if (changeGeminiBtn) {
+    changeGeminiBtn.addEventListener("click", () => {
+      clearGeminiFeedback();
+      showGeminiKeyEditor(true);
+    });
+  }
+
+  if (cancelGeminiBtn) {
+    cancelGeminiBtn.addEventListener("click", () => {
+      clearGeminiFeedback();
+      refreshGeminiKeyUI();
+    });
+  }
+
+  if (testGeminiBtn) {
+    testGeminiBtn.addEventListener("click", async () => {
+      clearGeminiFeedback();
+      setGeminiBusy(true);
+      const result = await GeminiAI.testStoredConnection();
+      setGeminiBusy(false);
+      showGeminiFeedback(result.message, result.success ? "positive" : "negative");
+    });
+  }
+
+  if (geminiInput) {
+    geminiInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveGeminiBtn.click();
     });
   }
 }
@@ -848,7 +931,6 @@ function callChromeStoragePromise(key) {
 // on change chrome storage triggers change of color..
 chrome.storage.onChanged.addListener((changes, namespace) => {
   for (var key in changes) {
-    console.log(key, changes[key]);
     if (key === "CPIhelperThemeInfo") {
       //|| key === "darkmodeOnStartup"
       var theme = changes[key];

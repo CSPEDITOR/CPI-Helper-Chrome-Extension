@@ -28,4 +28,4 @@ dist/
 skills-lock.json
 
 # Local Test Files
-tests
+test*

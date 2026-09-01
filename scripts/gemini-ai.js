@@ -56,6 +56,18 @@ var GeminiAI = (function () {
   }
 
   /**
+   * Returns a display-safe representation of the stored Gemini API key.
+   * The full key is never returned to settings UI callers.
+   */
+  async function getKeyStatus() {
+    const key = await getKey();
+    if (!key) return { exists: false, maskedKey: "" };
+
+    const visibleSuffix = key.length > 8 ? key.slice(-4) : "";
+    return { exists: true, maskedKey: `••••••••${visibleSuffix}` };
+  }
+
+  /**
    * Removes Gemini API key from chrome.storage.local
    */
   async function removeKey() {
@@ -105,22 +117,89 @@ var GeminiAI = (function () {
     });
   }
 
+  function redactKey(message, apiKey) {
+    if (!apiKey || !message) return message;
+
+    let safeMessage = String(message).split(apiKey).join("[REDACTED]");
+    const encodedKey = encodeURIComponent(apiKey);
+    if (encodedKey !== apiKey) safeMessage = safeMessage.split(encodedKey).join("[REDACTED]");
+    return safeMessage;
+  }
+
+  function connectionError(message, errorState = "api_error", apiKey = "") {
+    const safeMessage = redactKey(message, apiKey);
+    return { success: false, errorState, message: safeMessage || "Unable to connect to Gemini." };
+  }
+
+  /**
+   * Validates a Gemini API key by querying the same models endpoint used for
+   * model discovery. This does not mutate extension storage.
+   */
+  async function testConnection(apiKey) {
+    const trimmedKey = (apiKey || "").trim();
+    if (!trimmedKey) return connectionError("Gemini API key is required.", "missing_key");
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        const errorState = [400, 401, 403].includes(response.status) ? "invalid_key" : response.status === 429 ? "rate_limit" : "api_error";
+        const fallbackMessage = errorState === "invalid_key" ? "Invalid or unauthorized Gemini API key." : `Gemini API error (${response.status}).`;
+        return connectionError(data?.error?.message || fallbackMessage, errorState, trimmedKey);
+      }
+
+      if (!data || !Array.isArray(data.models)) {
+        return connectionError("Gemini returned an unexpected response while validating the API key.");
+      }
+
+      const models = data.models
+        .filter((model) => model.supportedGenerationMethods && model.supportedGenerationMethods.includes("generateContent"))
+        .map((model) => model.name.replace(/^models\//, ""));
+
+      if (models.length === 0) {
+        return connectionError("The API key connected successfully, but no Gemini models supporting content generation are available.");
+      }
+
+      return { success: true, message: "Connection successful.", models };
+    } catch (error) {
+      return connectionError(error?.message || "Failed to reach the Gemini API.", "network_error", trimmedKey);
+    }
+  }
+
+  /**
+   * Validates a candidate key and saves it only after validation succeeds.
+   * A failed validation leaves any currently stored key untouched.
+   */
+  async function validateAndSaveKey(apiKey) {
+    const trimmedKey = (apiKey || "").trim();
+    const result = await testConnection(trimmedKey);
+    if (!result.success) return result;
+
+    try {
+      await saveKey(trimmedKey);
+      return { ...result, message: "Connection successful. Gemini API key saved." };
+    } catch (error) {
+      return connectionError(error?.message || "The API key is valid, but it could not be saved.", "storage_error", trimmedKey);
+    }
+  }
+
+  /**
+   * Tests the currently stored Gemini API key.
+   */
+  async function testStoredConnection() {
+    const apiKey = await getKey();
+    return testConnection(apiKey);
+  }
+
   /**
    * Dynamically queries the Google Generative Language API for models supporting generateContent
    */
   async function fetchAvailableModels(apiKey) {
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
-      if (!response.ok) return [];
-      const data = await response.json();
-      if (!data || !data.models || !Array.isArray(data.models)) return [];
+    const result = await testConnection(apiKey);
+    if (!result.success) return [];
 
-      return data.models
-        .filter((m) => m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent"))
-        .map((m) => m.name.replace(/^models\//, ""));
-    } catch (e) {
-      return [];
-    }
+    return result.models;
   }
 
   /**
@@ -173,18 +252,18 @@ var GeminiAI = (function () {
    * Prompts user with prompt dialog if API key is not configured
    */
   async function promptKeySetup() {
-    return new Promise((resolve) => {
-      const enteredKey = prompt(
-        "Gemini API key is required to use AI Error Recommendation.\n\nPlease enter your Gemini API key (it will be saved locally in chrome.storage.local):"
-      );
-      if (enteredKey && enteredKey.trim()) {
-        saveKey(enteredKey.trim())
-          .then(() => resolve(enteredKey.trim()))
-          .catch(() => resolve(""));
-      } else {
-        resolve("");
-      }
-    });
+    const enteredKey = prompt(
+      "Gemini API key is required to use AI Error Recommendation.\n\nPlease enter your Gemini API key (it will be validated and saved locally in chrome.storage.local):"
+    );
+    if (!enteredKey || !enteredKey.trim()) return "";
+
+    const result = await validateAndSaveKey(enteredKey);
+    if (!result.success) {
+      alert(result.message);
+      return "";
+    }
+
+    return enteredKey.trim();
   }
 
   /**
@@ -290,24 +369,30 @@ Please generate structured JSON with:
           // If model is not found / 404, try next candidate model seamlessly!
           if (response.status === 404 || (responseData?.error?.message && responseData.error.message.includes("not found"))) {
             console.warn(`GeminiAI: Model ${modelId} returned 404 or not found. Trying next candidate model...`);
-            lastErrorResult = { errorState: "api_error", message: responseData?.error?.message || `Model ${modelId} not found.` };
+            lastErrorResult = { errorState: "api_error", message: redactKey(responseData?.error?.message || `Model ${modelId} not found.`, apiKey) };
             continue;
           }
 
           if (response.status === 400 || response.status === 403) {
             // Check if key is invalid vs invalid argument
             if (responseData?.error?.message && responseData.error.message.toLowerCase().includes("key")) {
-              return { errorState: "invalid_key", message: responseData?.error?.message || "Invalid or unauthorized Gemini API key." };
+              return { errorState: "invalid_key", message: redactKey(responseData?.error?.message || "Invalid or unauthorized Gemini API key.", apiKey) };
             }
-            lastErrorResult = { errorState: "api_error", message: responseData?.error?.message || `Bad request (${response.status})` };
+            lastErrorResult = { errorState: "api_error", message: redactKey(responseData?.error?.message || `Bad request (${response.status})`, apiKey) };
             continue;
           }
 
           if (response.status === 429) {
-            return { errorState: "rate_limit", message: responseData?.error?.message || "Gemini API rate limit exceeded. Please wait a moment and try again." };
+            return {
+              errorState: "rate_limit",
+              message: redactKey(responseData?.error?.message || "Gemini API rate limit exceeded. Please wait a moment and try again.", apiKey)
+            };
           }
 
-          return { errorState: "api_error", message: responseData?.error?.message || `API error (${response.status}): ${response.statusText}` };
+          return {
+            errorState: "api_error",
+            message: redactKey(responseData?.error?.message || `API error (${response.status}): ${response.statusText}`, apiKey)
+          };
         }
 
         const textContent = responseData?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -318,7 +403,7 @@ Please generate structured JSON with:
         const parsedJSON = JSON.parse(textContent);
         return { success: true, data: parsedJSON, usedModel: modelId };
       } catch (err) {
-        lastErrorResult = { errorState: "api_error", message: err.message || "Failed to reach Gemini API network endpoint." };
+        lastErrorResult = { errorState: "api_error", message: redactKey(err.message || "Failed to reach Gemini API network endpoint.", apiKey) };
       }
     }
 
@@ -583,7 +668,11 @@ Please generate structured JSON with:
   return {
     getKey,
     saveKey,
+    getKeyStatus,
     removeKey,
+    testConnection,
+    validateAndSaveKey,
+    testStoredConnection,
     getModelPreference,
     saveModelPreference,
     fetchAvailableModels,

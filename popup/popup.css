@@ -94,6 +94,39 @@ a[href].item:hover,
   display: none;
 }
 
+.cpiHelper_aiSettings {
+  margin-top: 1rem !important;
+}
+
+.cpiHelper_aiSettings > .header .icon {
+  color: #a333c8;
+}
+
+.cpiHelper_geminiField {
+  margin-bottom: 0.75rem;
+}
+
+.cpiHelper_geminiField select {
+  width: 100%;
+}
+
+.cpiHelper_geminiActions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.cpiHelper_geminiHelp {
+  margin-top: -0.25rem;
+  color: #767676;
+}
+
+#geminiMaskedKey {
+  letter-spacing: 0.08em;
+}
+
 a > p {
   padding-inline-end: 0.5rem;
   margin: 0;
