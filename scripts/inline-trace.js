@@ -226,15 +226,16 @@ async function clickTrace(e) {
                 errorMessage: errText,
                 stackTrace: errText,
                 adapterType: adapterType,
-                integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
+                integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null,
               };
 
               let innerContent = document.createElement("div");
               innerContent.classList.add("cpiHelper_traceText");
-              let errPre = document.createElement("pre");
-              errPre.innerText = errText;
-              innerContent.appendChild(errPre);
-              
+              const errorText = document.createElement("div");
+              errorText.classList.add("cpiHelper_traceErrorText");
+              errorText.textContent = errText;
+              innerContent.appendChild(errorText);
+
               let aiBtn = document.createElement("button");
               aiBtn.className = "ui purple button mini cpiHelper_getAiRecommendationBtn";
               aiBtn.style.marginTop = "10px";
