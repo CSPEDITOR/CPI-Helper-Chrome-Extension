@@ -6,18 +6,63 @@
 var GeminiAI = (function () {
   const KEY_STORAGE_KEY = "geminiApiKey";
   const MODEL_STORAGE_KEY = "geminiModel";
+  const PROVIDER_STORAGE_KEY = "aiProvider";
   const AI_PROMPT_VERSION = "1";
 
   const inFlightRequests = new Map();
 
-  const FALLBACK_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-pro"
-  ];
+  async function getProviderPreference() {
+    return new Promise((resolve) => {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get([PROVIDER_STORAGE_KEY], (result) => {
+          resolve(result[PROVIDER_STORAGE_KEY] === "openrouter" ? "openrouter" : "gemini");
+        });
+      } else {
+        resolve(localStorage.getItem(PROVIDER_STORAGE_KEY) === "openrouter" ? "openrouter" : "gemini");
+      }
+    });
+  }
+
+  async function saveProviderPreference(provider) {
+    const value = provider === "openrouter" ? "openrouter" : "gemini";
+    return new Promise((resolve, reject) => {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ [PROVIDER_STORAGE_KEY]: value }, () => {
+          if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+          else resolve(true);
+        });
+      } else {
+        localStorage.setItem(PROVIDER_STORAGE_KEY, value);
+        resolve(true);
+      }
+    });
+  }
+
+  async function getActiveProvider() {
+    const providerId = await getProviderPreference();
+    if (providerId === "openrouter") {
+      if (typeof OpenRouterAI === "undefined") {
+        return { error: "The OpenRouter module is unavailable. Reload the extension and try again." };
+      }
+      return {
+        id: "openrouter",
+        label: "OpenRouter",
+        modelPreference: await OpenRouterAI.getModelPreference(),
+        getKey: OpenRouterAI.getKey,
+        promptKeySetup: OpenRouterAI.promptKeySetup,
+        callApi: OpenRouterAI.callApi
+      };
+    }
+
+    return {
+      id: "gemini",
+      label: "Gemini",
+      modelPreference: await getModelPreference(),
+      getKey,
+      promptKeySetup,
+      callApi
+    };
+  }
 
   /**
    * Retrieves stored Gemini API key from chrome.storage.local
@@ -94,10 +139,12 @@ var GeminiAI = (function () {
     return new Promise((resolve) => {
       if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         chrome.storage.local.get([MODEL_STORAGE_KEY], (result) => {
-          resolve(result[MODEL_STORAGE_KEY] || "auto");
+          const storedModel = result[MODEL_STORAGE_KEY] || "";
+          resolve(storedModel === "auto" ? "" : storedModel);
         });
       } else {
-        resolve(localStorage.getItem(MODEL_STORAGE_KEY) || "auto");
+        const storedModel = localStorage.getItem(MODEL_STORAGE_KEY) || "";
+        resolve(storedModel === "auto" ? "" : storedModel);
       }
     });
   }
@@ -107,7 +154,8 @@ var GeminiAI = (function () {
    */
   async function saveModelPreference(model) {
     return new Promise((resolve) => {
-      const val = (model || "auto").trim();
+      const trimmedModel = (model || "").trim();
+      const val = trimmedModel === "auto" ? "" : trimmedModel;
       if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({ [MODEL_STORAGE_KEY]: val }, () => resolve(true));
       } else {
@@ -223,6 +271,7 @@ var GeminiAI = (function () {
     // 4. Remove API keys & tokens
     sanitized = sanitized.replace(/(api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|x-csrf-token)\s*[:=]\s*["']?[^\s"';&,]+["']?/gi, "$1=[REDACTED]");
     sanitized = sanitized.replace(/x-csrf-token\s*:\s*[^\r\n]+/gi, "X-CSRF-Token: [REDACTED]");
+    sanitized = sanitized.replace(/\bsk-or-v1-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]");
 
     // 5. Remove URL query param credentials
     sanitized = sanitized.replace(/([?&](?:api_?key|access_?token|secret|password)=)[^&]+/gi, "$1[REDACTED]");
@@ -267,31 +316,15 @@ var GeminiAI = (function () {
   }
 
   /**
-   * Calls Gemini REST API with auto-model discovery and fallback mechanism
+   * Calls the exact Gemini model selected by the user.
    */
   async function callApi(sanitizedData, apiKey) {
     const userModelPref = await getModelPreference();
-
-    // Query active models from Google API
-    const onlineModels = await fetchAvailableModels(apiKey);
-    let candidateModels = [];
-
-    if (userModelPref && userModelPref !== "auto") {
-      candidateModels.push(userModelPref);
+    if (!userModelPref) {
+      return connectionError("Select a Gemini model in CPI Helper AI Settings before generating a recommendation.", "missing_model");
     }
 
-    if (onlineModels.length > 0) {
-      // Prioritize flash models first
-      const flashModels = onlineModels.filter((m) => m.includes("flash"));
-      candidateModels.push(...flashModels);
-      candidateModels.push(...onlineModels);
-    }
-
-    // Append fallback list
-    candidateModels.push(...FALLBACK_MODELS);
-
-    // Deduplicate candidate models array
-    candidateModels = [...new Set(candidateModels)];
+    const candidateModels = [userModelPref];
 
     const promptText = `
 You are an expert SAP Cloud Integration (CPI/CI) troubleshooting assistant.
@@ -366,11 +399,11 @@ Please generate structured JSON with:
         const responseData = await response.json();
 
         if (!response.ok) {
-          // If model is not found / 404, try next candidate model seamlessly!
+          // Keep the selected model fixed; report if it is no longer available.
           if (response.status === 404 || (responseData?.error?.message && responseData.error.message.includes("not found"))) {
-            console.warn(`GeminiAI: Model ${modelId} returned 404 or not found. Trying next candidate model...`);
+            console.warn(`GeminiAI: Selected model ${modelId} returned 404 or was not found.`);
             lastErrorResult = { errorState: "api_error", message: redactKey(responseData?.error?.message || `Model ${modelId} not found.`, apiKey) };
-            continue;
+            break;
           }
 
           if (response.status === 400 || response.status === 403) {
@@ -407,7 +440,7 @@ Please generate structured JSON with:
       }
     }
 
-    return lastErrorResult || { errorState: "api_error", message: "No supported Gemini model found for generateContent." };
+    return lastErrorResult || { errorState: "api_error", message: `The selected Gemini model (${userModelPref}) could not generate a response.` };
   }
 
   function showAnalysisLoading() {
@@ -433,63 +466,89 @@ Please generate structured JSON with:
   }
 
   /**
-   * Returns a parsed AI recommendation from persistent cache or Gemini.
-   * Callers receive the same result shape on both paths and do not need to
-   * coordinate cache reads, writes, or concurrent requests.
+   * Returns a parsed AI recommendation from persistent cache or the selected
+   * provider. Callers receive one result shape and do not coordinate provider
+   * credentials, cache reads, writes, or concurrent requests.
    */
   async function getAiFix(rawContext, options = {}) {
     const sanitizedData = options.sanitizedData || sanitizeErrorData(rawContext);
-    const modelPreference = await getModelPreference();
+    const provider = await getActiveProvider();
+    if (provider.error) return { success: false, errorState: "provider_error", message: provider.error };
+
+    const modelPreference = provider.modelPreference;
+    if (!modelPreference) {
+      return {
+        success: false,
+        errorState: "missing_model",
+        message: `Select a ${provider.label} model in CPI Helper AI Settings before generating a recommendation.`,
+        provider: provider.id,
+        providerLabel: provider.label
+      };
+    }
+    // Keep existing Gemini cache entries compatible while namespacing all
+    // additional providers to prevent cross-provider cache collisions.
+    const cachePreference = provider.id === "gemini" ? modelPreference : `${provider.id}:${modelPreference}`;
     const cache = getCacheModule();
     let signature = null;
 
     if (cache) {
       try {
-        signature = await cache.createAiFixSignature(sanitizedData, modelPreference, AI_PROMPT_VERSION);
+        signature = await cache.createAiFixSignature(sanitizedData, cachePreference, AI_PROMPT_VERSION);
         if (!options.forceRefresh) {
           const cachedEntry = await cache.getCachedAiFix(signature, {
-            modelPreference,
+            modelPreference: cachePreference,
             promptVersion: AI_PROMPT_VERSION
           });
           if (cachedEntry) {
             return {
               ...cachedEntry.response,
+              provider: cachedEntry.response.provider || provider.id,
+              providerLabel: cachedEntry.response.providerLabel || provider.label,
               fromCache: true,
               generatedAt: cachedEntry.createdAt
             };
           }
         }
       } catch (error) {
-        console.warn("GeminiAI: Cache lookup failed; continuing with Gemini.", error);
+        console.warn(`GeminiAI: Cache lookup failed; continuing with ${provider.label}.`, error);
         signature = null;
       }
     }
 
-    const requestKey = signature || `${modelPreference}\n${JSON.stringify(sanitizedData)}`;
+    const requestKey = signature || `${cachePreference}\n${JSON.stringify(sanitizedData)}`;
     if (inFlightRequests.has(requestKey)) {
       if (options.onBeforeRequest) options.onBeforeRequest();
       return inFlightRequests.get(requestKey);
     }
 
     const request = (async () => {
-      let apiKey = await getKey();
-      if (!apiKey) apiKey = await promptKeySetup();
-      if (!apiKey) return { errorState: "missing_key", message: "Gemini API key is required." };
+      let apiKey = await provider.getKey();
+      if (!apiKey) apiKey = await provider.promptKeySetup();
+      if (!apiKey) {
+        return {
+          success: false,
+          errorState: "missing_key",
+          message: `${provider.label} API key is required.`,
+          provider: provider.id,
+          providerLabel: provider.label
+        };
+      }
 
       if (options.onBeforeRequest) options.onBeforeRequest();
-      const result = await callApi(sanitizedData, apiKey);
+      const result = await provider.callApi(sanitizedData, apiKey);
       if (result.success) {
         const generatedAt = Date.now();
+        const providerResult = { ...result, provider: provider.id, providerLabel: provider.label };
         if (cache && signature) {
-          await cache.saveCachedAiFix(signature, result, {
+          await cache.saveCachedAiFix(signature, providerResult, {
             model: result.usedModel || modelPreference,
-            modelPreference,
+            modelPreference: cachePreference,
             promptVersion: AI_PROMPT_VERSION
           });
         }
-        return { ...result, fromCache: false, generatedAt };
+        return { ...providerResult, fromCache: false, generatedAt };
       }
-      return result;
+      return { ...result, provider: provider.id, providerLabel: provider.label };
     })();
 
     inFlightRequests.set(requestKey, request);
@@ -508,7 +567,11 @@ Please generate structured JSON with:
     });
 
     if (result.errorState === "missing_key") {
-      showToast("Gemini API key is required to get AI recommendation.", "Key Missing", "warning");
+      showToast(result.message || "An AI provider API key is required.", "Key Missing", "warning");
+      return;
+    }
+    if (result.errorState === "missing_model") {
+      showToast(result.message, "Model Required", "warning");
       return;
     }
 
@@ -541,7 +604,13 @@ Please generate structured JSON with:
         title = "Rate Limit Exceeded";
         icon = "hourglass expire";
         alertClass = "warning";
+      } else if (result.errorState === "payment_required") {
+        title = "OpenRouter Credits Required";
+        icon = "credit card";
+        alertClass = "warning";
       }
+
+      const providerLabel = result.providerLabel || "AI provider";
 
       container.innerHTML = `
         <div class="ui ${alertClass} message">
@@ -549,19 +618,20 @@ Please generate structured JSON with:
           <p>${htmlEscape(result.message)}</p>
         </div>
         <div class="ui horizontal divider">Actions</div>
-        <button id="cpiHelper_updateGeminiKeyBtn" class="ui primary button"><i class="key icon"></i> Update Gemini API Key</button>
-        <button id="cpiHelper_retryGeminiBtn" class="ui positive button"><i class="redo icon"></i> Retry</button>
+        <button id="cpiHelper_updateAiKeyBtn" class="ui primary button"><i class="key icon"></i> Update ${htmlEscape(providerLabel)} API Key</button>
+        <button id="cpiHelper_retryAiBtn" class="ui positive button"><i class="redo icon"></i> Retry</button>
       `;
 
       showBigPopup(container, "Fix with AI - Error", { fullscreen: false, closeText: "Close" });
 
       setTimeout(() => {
-        const updateKeyBtn = document.getElementById("cpiHelper_updateGeminiKeyBtn");
-        const retryBtn = document.getElementById("cpiHelper_retryGeminiBtn");
+        const updateKeyBtn = document.getElementById("cpiHelper_updateAiKeyBtn");
+        const retryBtn = document.getElementById("cpiHelper_retryAiBtn");
 
         if (updateKeyBtn) {
           updateKeyBtn.onclick = async () => {
-            const newKey = await promptKeySetup();
+            const provider = await getActiveProvider();
+            const newKey = provider.error ? "" : await provider.promptKeySetup();
             if (newKey) {
               handleGetRecommendation(rawContext);
             }
@@ -601,6 +671,7 @@ Please generate structured JSON with:
         <h3 class="ui header" style="margin: 0;"><i class="magic icon" style="color: #a333c8;"></i> Fix with AI</h3>
         <div>
           <span class="ui ${confidenceColor} label"><i class="tachometer alternate icon"></i> Confidence: ${confidenceText}</span>
+          ${result.providerLabel ? `<span class="ui basic label" style="margin-left: 5px;"><i class="cloud icon"></i> Provider: ${htmlEscape(result.providerLabel)}</span>` : ""}
           ${result.usedModel ? `<span class="ui basic label" style="margin-left: 5px;"><i class="cpu icon"></i> Model: ${htmlEscape(result.usedModel)}</span>` : ""}
           ${cachedLabel}
         </div>
@@ -666,6 +737,8 @@ Please generate structured JSON with:
   }
 
   return {
+    getProviderPreference,
+    saveProviderPreference,
     getKey,
     saveKey,
     getKeyStatus,

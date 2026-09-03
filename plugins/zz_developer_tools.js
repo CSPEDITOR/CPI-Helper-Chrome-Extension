@@ -66,6 +66,9 @@ var plugin = {
             if (localStorage.geminiApiKey) {
               localStorage.geminiApiKey = "••••••••";
             }
+            if (localStorage.openRouterApiKey) {
+              localStorage.openRouterApiKey = "••••••••";
+            }
             $(".tabular.menu .item").tab();
             document.getElementById("cpiHelper_zz_developer_tools_localStorage").innerText = JSON.stringify(localStorage, null, 2);
             document.getElementById("cpiHelper_zz_developer_tools_syncStorage").innerText = JSON.stringify(syncStorage, null, 2);

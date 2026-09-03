@@ -323,39 +323,77 @@ function addTenantSettings() {
         </div>
         <div class="ui segment cpiHelper_aiSettings">
             <h3 class="ui header"><i class="magic icon"></i> AI Settings</h3>
-            <h4 class="ui dividing header">Gemini API Key</h4>
-            <div id="geminiSavedKeyState" class="hidden">
-                <div class="ui labeled input fluid cpiHelper_geminiField">
-                    <div class="ui label">Saved Key</div>
-                    <input type="text" id="geminiMaskedKey" readonly aria-label="Masked Gemini API key" />
-                </div>
-                <div class="cpiHelper_geminiActions">
-                    <button class="ui purple button" id="changeGeminiKeyBtn" type="button"><i class="key icon"></i> Change API Key</button>
-                    <button class="ui red basic button" id="removeGeminiKeyBtn" type="button"><i class="trash icon"></i> Remove API Key</button>
-                    <button class="ui basic button" id="testGeminiConnectionBtn" type="button"><i class="plug icon"></i> Test Connection</button>
-                </div>
-            </div>
-            <div id="geminiKeyEditor" class="hidden">
-                <div class="ui labeled input fluid cpiHelper_geminiField">
-                    <div class="ui label" id="geminiKeyInputLabel">API Key</div>
-                    <input type="password" id="geminiApiKeyInput" placeholder="Enter your Gemini API key" autocomplete="off" />
-                </div>
-                <p class="cpiHelper_geminiHelp">The key is tested with Gemini before it is saved. An existing key is kept if validation fails.</p>
-                <div class="cpiHelper_geminiActions">
-                    <button class="ui purple button" id="saveGeminiKeyBtn" type="button"><i class="check icon"></i> Add API Key</button>
-                    <button class="ui basic button hidden" id="cancelGeminiKeyChangeBtn" type="button">Cancel</button>
-                </div>
-            </div>
-            <div id="geminiKeyFeedback" class="ui message hidden" role="status" aria-live="polite"></div>
-            <div class="ui labeled input fluid cpiHelper_geminiField">
-                <div class="ui label">Gemini Model</div>
-                <select id="geminiModelSelect" class="ui selection dropdown">
-                    <option value="auto">Auto-detect available model (Recommended)</option>
-                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                    <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash (Latest)</option>
-                    <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+            <div class="ui labeled input fluid cpiHelper_aiField">
+                <div class="ui label">Provider</div>
+                <select id="aiProviderSelect" class="ui selection dropdown">
+                    <option value="gemini">Google Gemini</option>
+                    <option value="openrouter">OpenRouter (OpenAI + Gemini models)</option>
                 </select>
+            </div>
+            <div class="cpiHelper_aiProviderPanel" data-ai-provider="gemini">
+                <h4 class="ui dividing header">Gemini API Key</h4>
+                <div id="geminiSavedKeyState" class="hidden">
+                    <div class="ui labeled input fluid cpiHelper_aiField">
+                        <div class="ui label">Saved Key</div>
+                        <input type="text" id="geminiMaskedKey" readonly aria-label="Masked Gemini API key" />
+                    </div>
+                    <div class="cpiHelper_aiActions">
+                        <button class="ui purple button" id="changeGeminiKeyBtn" type="button"><i class="key icon"></i> Change API Key</button>
+                        <button class="ui red basic button" id="removeGeminiKeyBtn" type="button"><i class="trash icon"></i> Remove API Key</button>
+                        <button class="ui basic button" id="testGeminiConnectionBtn" type="button"><i class="plug icon"></i> Test Connection</button>
+                    </div>
+                </div>
+                <div id="geminiKeyEditor" class="hidden">
+                    <div class="ui labeled input fluid cpiHelper_aiField">
+                        <div class="ui label" id="geminiKeyInputLabel">API Key</div>
+                        <input type="password" id="geminiApiKeyInput" placeholder="Enter your Gemini API key" autocomplete="off" />
+                    </div>
+                    <p class="cpiHelper_aiHelp">The key is tested with Gemini before it is saved. An existing key is kept if validation fails.</p>
+                    <div class="cpiHelper_aiActions">
+                        <button class="ui purple button" id="saveGeminiKeyBtn" type="button"><i class="check icon"></i> Add API Key</button>
+                        <button class="ui basic button hidden" id="cancelGeminiKeyChangeBtn" type="button">Cancel</button>
+                    </div>
+                </div>
+                <div id="geminiKeyFeedback" class="ui message hidden" role="status" aria-live="polite"></div>
+                <div class="ui labeled input fluid cpiHelper_aiField">
+                    <div class="ui label">Gemini Model</div>
+                    <select id="geminiModelSelect" class="ui selection dropdown">
+                        <option value="">Save or test your key to load Gemini models</option>
+                    </select>
+                </div>
+            </div>
+            <div class="cpiHelper_aiProviderPanel hidden" data-ai-provider="openrouter">
+                <h4 class="ui dividing header">OpenRouter API Key</h4>
+                <div id="openRouterSavedKeyState" class="hidden">
+                    <div class="ui labeled input fluid cpiHelper_aiField">
+                        <div class="ui label">Saved Key</div>
+                        <input type="text" id="openRouterMaskedKey" readonly aria-label="Masked OpenRouter API key" />
+                    </div>
+                    <div class="cpiHelper_aiActions">
+                        <button class="ui purple button" id="changeOpenRouterKeyBtn" type="button"><i class="key icon"></i> Change API Key</button>
+                        <button class="ui red basic button" id="removeOpenRouterKeyBtn" type="button"><i class="trash icon"></i> Remove API Key</button>
+                        <button class="ui basic button" id="testOpenRouterConnectionBtn" type="button"><i class="plug icon"></i> Test Connection</button>
+                    </div>
+                </div>
+                <div id="openRouterKeyEditor" class="hidden">
+                    <div class="ui labeled input fluid cpiHelper_aiField">
+                        <div class="ui label" id="openRouterKeyInputLabel">API Key</div>
+                        <input type="password" id="openRouterApiKeyInput" placeholder="Enter your OpenRouter API key" autocomplete="off" />
+                    </div>
+                    <p class="cpiHelper_aiHelp">The key is tested with OpenRouter before it is saved. It remains stored only in this browser.</p>
+                    <div class="cpiHelper_aiActions">
+                        <button class="ui purple button" id="saveOpenRouterKeyBtn" type="button"><i class="check icon"></i> Add API Key</button>
+                        <button class="ui basic button hidden" id="cancelOpenRouterKeyChangeBtn" type="button">Cancel</button>
+                    </div>
+                </div>
+                <div id="openRouterKeyFeedback" class="ui message hidden" role="status" aria-live="polite"></div>
+                <div class="ui labeled input fluid cpiHelper_aiField">
+                    <div class="ui label">OpenRouter Model</div>
+                    <select id="openRouterModelSelect" class="ui selection dropdown">
+                        <option value="">Save or test your key to load OpenAI and Gemini models</option>
+                    </select>
+                </div>
+                <p class="cpiHelper_aiHelp">Choose the exact OpenAI or Google Gemini model OpenRouter should use.</p>
             </div>
         </div>
     </div>
@@ -432,143 +470,253 @@ function addTenantSettings() {
     });
   });
 
-  // Gemini API Key Settings logic
-  const geminiInput = document.getElementById("geminiApiKeyInput");
-  const saveGeminiBtn = document.getElementById("saveGeminiKeyBtn");
-  const removeGeminiBtn = document.getElementById("removeGeminiKeyBtn");
-  const changeGeminiBtn = document.getElementById("changeGeminiKeyBtn");
-  const testGeminiBtn = document.getElementById("testGeminiConnectionBtn");
-  const cancelGeminiBtn = document.getElementById("cancelGeminiKeyChangeBtn");
-  const savedKeyState = document.getElementById("geminiSavedKeyState");
-  const keyEditor = document.getElementById("geminiKeyEditor");
-  const maskedKey = document.getElementById("geminiMaskedKey");
-  const keyInputLabel = document.getElementById("geminiKeyInputLabel");
-  const geminiFeedback = document.getElementById("geminiKeyFeedback");
-  const geminiActionButtons = [saveGeminiBtn, removeGeminiBtn, changeGeminiBtn, testGeminiBtn, cancelGeminiBtn].filter(Boolean);
+  // AI provider and credential settings
+  function setupAiProviderSettings(config) {
+    const input = document.getElementById(config.inputId);
+    const saveButton = document.getElementById(config.saveButtonId);
+    const removeButton = document.getElementById(config.removeButtonId);
+    const changeButton = document.getElementById(config.changeButtonId);
+    const testButton = document.getElementById(config.testButtonId);
+    const cancelButton = document.getElementById(config.cancelButtonId);
+    const savedKeyState = document.getElementById(config.savedKeyStateId);
+    const keyEditor = document.getElementById(config.keyEditorId);
+    const maskedKey = document.getElementById(config.maskedKeyId);
+    const keyInputLabel = document.getElementById(config.keyInputLabelId);
+    const feedback = document.getElementById(config.feedbackId);
+    const modelInput = document.getElementById(config.modelInputId);
+    const actionButtons = [saveButton, removeButton, changeButton, testButton, cancelButton].filter(Boolean);
+    let hasKey = false;
+    let modelsLoaded = false;
 
-  let hasGeminiKey = false;
-
-  function showGeminiFeedback(message, type) {
-    geminiFeedback.textContent = message;
-    geminiFeedback.className = `ui ${type || "info"} message`;
-  }
-
-  function clearGeminiFeedback() {
-    geminiFeedback.textContent = "";
-    geminiFeedback.className = "ui message hidden";
-  }
-
-  function setGeminiBusy(isBusy) {
-    geminiActionButtons.forEach((button) => {
-      button.disabled = isBusy;
-      button.classList.toggle("loading", isBusy && button === document.activeElement);
-    });
-  }
-
-  function showGeminiKeyEditor(isChanging) {
-    savedKeyState.classList.add("hidden");
-    keyEditor.classList.remove("hidden");
-    geminiInput.value = "";
-    keyInputLabel.textContent = isChanging ? "New API Key" : "API Key";
-    saveGeminiBtn.innerHTML = isChanging ? '<i class="check icon"></i> Save New API Key' : '<i class="check icon"></i> Add API Key';
-    cancelGeminiBtn.classList.toggle("hidden", !isChanging);
-    if (isChanging) geminiInput.focus();
-  }
-
-  async function refreshGeminiKeyUI() {
-    const status = await GeminiAI.getKeyStatus();
-    hasGeminiKey = status.exists;
-    geminiInput.value = "";
-    maskedKey.value = status.maskedKey;
-    if (status.exists) {
-      keyEditor.classList.add("hidden");
-      savedKeyState.classList.remove("hidden");
-    } else {
-      showGeminiKeyEditor(false);
+    function showFeedback(message, type) {
+      feedback.textContent = message;
+      feedback.className = `ui ${type || "info"} message`;
     }
-  }
 
-  const geminiModelSelect = document.getElementById("geminiModelSelect");
+    function clearFeedback() {
+      feedback.textContent = "";
+      feedback.className = "ui message hidden";
+    }
 
-  refreshGeminiKeyUI().catch(() => showGeminiFeedback("Unable to read Gemini settings.", "negative"));
-  GeminiAI.getModelPreference().then((model) => {
-    if (geminiModelSelect) geminiModelSelect.value = model;
-  });
+    function setBusy(isBusy) {
+      actionButtons.forEach((button) => {
+        button.disabled = isBusy;
+        button.classList.toggle("loading", isBusy && button === document.activeElement);
+      });
+    }
 
-  if (geminiModelSelect) {
-    geminiModelSelect.addEventListener("change", () => {
-      GeminiAI.saveModelPreference(geminiModelSelect.value);
+    function showKeyEditor(isChanging) {
+      savedKeyState.classList.add("hidden");
+      keyEditor.classList.remove("hidden");
+      input.value = "";
+      keyInputLabel.textContent = isChanging ? "New API Key" : "API Key";
+      saveButton.innerHTML = isChanging ? '<i class="check icon"></i> Save New API Key' : '<i class="check icon"></i> Add API Key';
+      cancelButton.classList.toggle("hidden", !isChanging);
+      if (isChanging) input.focus();
+    }
+
+    async function updateModelList(models) {
+      if (!Array.isArray(models)) return;
+      const selectedModel = await config.module.getModelPreference();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = config.modelPlaceholder;
+
+      const ungroupedOptions = [];
+      const groupedOptions = new Map();
+      models.forEach((model) => {
+        const normalizedModel = typeof model === "string" ? { id: model, name: model, group: "" } : model;
+        if (!normalizedModel || !normalizedModel.id) return;
+        const group = normalizedModel.group || "";
+        if (!groupedOptions.has(group)) groupedOptions.set(group, []);
+        groupedOptions.get(group).push(normalizedModel);
+      });
+
+      groupedOptions.forEach((modelsInGroup, group) => {
+        const container = group ? document.createElement("optgroup") : null;
+        if (container) container.label = group;
+        modelsInGroup.forEach((model) => {
+          const option = document.createElement("option");
+          option.value = model.id;
+          option.textContent = model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id;
+          if (container) container.appendChild(option);
+          else ungroupedOptions.push(option);
+        });
+        if (container) ungroupedOptions.push(container);
+      });
+
+      modelInput.replaceChildren(placeholder, ...ungroupedOptions);
+      const selectedModelExists = Array.from(modelInput.options).some((option) => option.value === selectedModel);
+      modelInput.value = selectedModelExists ? selectedModel : "";
+      if (selectedModel && !selectedModelExists) await config.module.saveModelPreference("");
+      modelsLoaded = true;
+    }
+
+    async function refreshKeyUI() {
+      const status = await config.module.getKeyStatus();
+      hasKey = status.exists;
+      input.value = "";
+      maskedKey.value = status.maskedKey;
+      if (status.exists) {
+        keyEditor.classList.add("hidden");
+        savedKeyState.classList.remove("hidden");
+      } else {
+        showKeyEditor(false);
+      }
+    }
+
+    async function loadModels(showSuccess = false) {
+      await ready;
+      if (!hasKey || modelsLoaded) return;
+      setBusy(true);
+      const result = await config.module.testStoredConnection();
+      setBusy(false);
+      if (!result.success) {
+        showFeedback(result.message, "negative");
+        return;
+      }
+      await updateModelList(result.models);
+      if (showSuccess) showFeedback(result.message, "positive");
+    }
+
+    const ready = refreshKeyUI()
+      .then(() => config.module.getModelPreference())
+      .then((model) => {
+        modelInput.value = model;
+      })
+      .catch(() => showFeedback(`Unable to read ${config.label} settings.`, "negative"));
+
+    modelInput.addEventListener("change", async () => {
+      try {
+        await config.module.saveModelPreference(modelInput.value);
+        modelInput.value = await config.module.getModelPreference();
+      } catch (error) {
+        showFeedback(`Unable to save the ${config.label} model.`, "negative");
+      }
     });
-  }
 
-  if (saveGeminiBtn) {
-    saveGeminiBtn.addEventListener("click", async () => {
-      const val = geminiInput ? geminiInput.value.trim() : "";
-      if (!val) {
-        showGeminiFeedback("Enter a Gemini API key.", "warning");
+    saveButton.addEventListener("click", async () => {
+      const value = input.value.trim();
+      if (!value) {
+        showFeedback(`Enter a valid ${config.label} API key.`, "warning");
         return;
       }
 
-      clearGeminiFeedback();
-      setGeminiBusy(true);
-      const result = await GeminiAI.validateAndSaveKey(val);
-      geminiInput.value = "";
-      setGeminiBusy(false);
+      clearFeedback();
+      setBusy(true);
+      const result = await config.module.validateAndSaveKey(value);
+      input.value = "";
+      setBusy(false);
 
       if (!result.success) {
-        showGeminiFeedback(`${result.message}${hasGeminiKey ? " Your existing API key was not changed." : ""}`, "negative");
+        showFeedback(`${result.message}${hasKey ? " Your existing API key was not changed." : ""}`, "negative");
         return;
       }
 
-      await refreshGeminiKeyUI();
-      showGeminiFeedback(result.message, "positive");
+      await updateModelList(result.models);
+      await refreshKeyUI();
+      showFeedback(result.message, "positive");
     });
-  }
 
-  if (removeGeminiBtn) {
-    removeGeminiBtn.addEventListener("click", async () => {
-      setGeminiBusy(true);
+    removeButton.addEventListener("click", async () => {
+      setBusy(true);
       try {
-        await GeminiAI.removeKey();
-        await refreshGeminiKeyUI();
-        showGeminiFeedback("Gemini API key removed.", "positive");
+        await config.module.removeKey();
+        await refreshKeyUI();
+        modelsLoaded = false;
+        await updateModelList([]);
+        showFeedback(`${config.label} API key removed.`, "positive");
       } catch (error) {
-        showGeminiFeedback("Unable to remove the Gemini API key.", "negative");
+        showFeedback(`Unable to remove the ${config.label} API key.`, "negative");
       } finally {
-        setGeminiBusy(false);
+        setBusy(false);
       }
     });
+
+    changeButton.addEventListener("click", () => {
+      clearFeedback();
+      showKeyEditor(true);
+    });
+
+    cancelButton.addEventListener("click", () => {
+      clearFeedback();
+      refreshKeyUI();
+    });
+
+    testButton.addEventListener("click", async () => {
+      clearFeedback();
+      setBusy(true);
+      const result = await config.module.testStoredConnection();
+      setBusy(false);
+      await updateModelList(result.models);
+      showFeedback(result.message, result.success ? "positive" : "negative");
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveButton.click();
+    });
+
+    return { loadModels };
   }
 
-  if (changeGeminiBtn) {
-    changeGeminiBtn.addEventListener("click", () => {
-      clearGeminiFeedback();
-      showGeminiKeyEditor(true);
+  const geminiSettings = setupAiProviderSettings({
+    label: "Gemini",
+    module: GeminiAI,
+    inputId: "geminiApiKeyInput",
+    saveButtonId: "saveGeminiKeyBtn",
+    removeButtonId: "removeGeminiKeyBtn",
+    changeButtonId: "changeGeminiKeyBtn",
+    testButtonId: "testGeminiConnectionBtn",
+    cancelButtonId: "cancelGeminiKeyChangeBtn",
+    savedKeyStateId: "geminiSavedKeyState",
+    keyEditorId: "geminiKeyEditor",
+    maskedKeyId: "geminiMaskedKey",
+    keyInputLabelId: "geminiKeyInputLabel",
+    feedbackId: "geminiKeyFeedback",
+    modelInputId: "geminiModelSelect",
+    modelPlaceholder: "Select a Gemini model"
+  });
+
+  const openRouterSettings = setupAiProviderSettings({
+    label: "OpenRouter",
+    module: OpenRouterAI,
+    inputId: "openRouterApiKeyInput",
+    saveButtonId: "saveOpenRouterKeyBtn",
+    removeButtonId: "removeOpenRouterKeyBtn",
+    changeButtonId: "changeOpenRouterKeyBtn",
+    testButtonId: "testOpenRouterConnectionBtn",
+    cancelButtonId: "cancelOpenRouterKeyChangeBtn",
+    savedKeyStateId: "openRouterSavedKeyState",
+    keyEditorId: "openRouterKeyEditor",
+    maskedKeyId: "openRouterMaskedKey",
+    keyInputLabelId: "openRouterKeyInputLabel",
+    feedbackId: "openRouterKeyFeedback",
+    modelInputId: "openRouterModelSelect",
+    modelPlaceholder: "Select an OpenAI or Gemini model"
+  });
+
+  const providerSelect = document.getElementById("aiProviderSelect");
+  const providerSettings = { gemini: geminiSettings, openrouter: openRouterSettings };
+  function showProviderPanel(provider) {
+    document.querySelectorAll(".cpiHelper_aiProviderPanel").forEach((panel) => {
+      panel.classList.toggle("hidden", panel.dataset.aiProvider !== provider);
     });
   }
 
-  if (cancelGeminiBtn) {
-    cancelGeminiBtn.addEventListener("click", () => {
-      clearGeminiFeedback();
-      refreshGeminiKeyUI();
-    });
-  }
-
-  if (testGeminiBtn) {
-    testGeminiBtn.addEventListener("click", async () => {
-      clearGeminiFeedback();
-      setGeminiBusy(true);
-      const result = await GeminiAI.testStoredConnection();
-      setGeminiBusy(false);
-      showGeminiFeedback(result.message, result.success ? "positive" : "negative");
-    });
-  }
-
-  if (geminiInput) {
-    geminiInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") saveGeminiBtn.click();
-    });
-  }
+  GeminiAI.getProviderPreference().then((provider) => {
+    providerSelect.value = provider;
+    showProviderPanel(provider);
+    providerSettings[provider].loadModels();
+  });
+  providerSelect.addEventListener("change", async () => {
+    try {
+      await GeminiAI.saveProviderPreference(providerSelect.value);
+      showProviderPanel(providerSelect.value);
+      providerSettings[providerSelect.value].loadModels();
+    } catch (error) {
+      providerSelect.value = await GeminiAI.getProviderPreference();
+    }
+  });
 }
 
 function addTenantUrls() {

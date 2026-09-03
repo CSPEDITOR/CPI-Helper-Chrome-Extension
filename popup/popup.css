@@ -102,15 +102,15 @@ a[href].item:hover,
   color: #a333c8;
 }
 
-.cpiHelper_geminiField {
+.cpiHelper_aiField {
   margin-bottom: 0.75rem;
 }
 
-.cpiHelper_geminiField select {
+.cpiHelper_aiField select {
   width: 100%;
 }
 
-.cpiHelper_geminiActions {
+.cpiHelper_aiActions {
   display: flex;
   gap: 0.5rem;
   align-items: center;
@@ -118,12 +118,13 @@ a[href].item:hover,
   margin-bottom: 0.75rem;
 }
 
-.cpiHelper_geminiHelp {
+.cpiHelper_aiHelp {
   margin-top: -0.25rem;
   color: #767676;
 }
 
-#geminiMaskedKey {
+#geminiMaskedKey,
+#openRouterMaskedKey {
   letter-spacing: 0.08em;
 }
 

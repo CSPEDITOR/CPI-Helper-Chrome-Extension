@@ -16,7 +16,8 @@
     "https://*.platform.sapcloud.cn/itspaces",
     "https://*.hana.ondemand.com/shell",
     "https://*.platform.sapcloud.cn/shell",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://openrouter.ai/*"
   ],
   "permissions": ["storage"],
   "content_scripts": [
@@ -78,6 +79,7 @@
         "/plugins/zz_developer_tools.js",
         "/plugins/iFlowSearcher.js",
         "/scripts/ai-fix-cache.js",
+        "/scripts/openrouter-ai.js",
         "/scripts/gemini-ai.js",
         "/scripts/ui.js",
         "/scripts/logs.js",
