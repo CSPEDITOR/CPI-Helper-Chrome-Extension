@@ -79,6 +79,7 @@
         "/plugins/zz_developer_tools.js",
         "/plugins/iFlowSearcher.js",
         "/scripts/ai-fix-cache.js",
+        "/scripts/ai-model-policy.js",
         "/scripts/openrouter-ai.js",
         "/scripts/gemini-ai.js",
         "/scripts/ui.js",

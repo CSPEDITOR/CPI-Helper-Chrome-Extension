@@ -327,7 +327,7 @@ function addTenantSettings() {
                 <div class="ui label">Provider</div>
                 <select id="aiProviderSelect" class="ui selection dropdown">
                     <option value="gemini">Google Gemini</option>
-                    <option value="openrouter">OpenRouter (OpenAI + Gemini models)</option>
+                    <option value="openrouter">OpenRouter (text models)</option>
                 </select>
             </div>
             <div class="cpiHelper_aiProviderPanel" data-ai-provider="gemini">
@@ -390,10 +390,10 @@ function addTenantSettings() {
                 <div class="ui labeled input fluid cpiHelper_aiField">
                     <div class="ui label">OpenRouter Model</div>
                     <select id="openRouterModelSelect" class="ui selection dropdown">
-                        <option value="">Save or test your key to load OpenAI and Gemini models</option>
+                        <option value="">Save or test your key to load supported models</option>
                     </select>
                 </div>
-                <p class="cpiHelper_aiHelp">Choose the exact OpenAI or Google Gemini model OpenRouter should use.</p>
+                <p class="cpiHelper_aiHelp">A supported model is selected automatically. You can choose another available model.</p>
             </div>
         </div>
     </div>
@@ -486,7 +486,7 @@ function addTenantSettings() {
     const modelInput = document.getElementById(config.modelInputId);
     const actionButtons = [saveButton, removeButton, changeButton, testButton, cancelButton].filter(Boolean);
     let hasKey = false;
-    let modelsLoaded = false;
+    modelInput.disabled = true;
 
     function showFeedback(message, type) {
       feedback.textContent = message;
@@ -499,6 +499,7 @@ function addTenantSettings() {
     }
 
     function setBusy(isBusy) {
+      modelInput.disabled = isBusy || !Array.from(modelInput.options).some((option) => option.value);
       actionButtons.forEach((button) => {
         button.disabled = isBusy;
         button.classList.toggle("loading", isBusy && button === document.activeElement);
@@ -517,10 +518,16 @@ function addTenantSettings() {
 
     async function updateModelList(models) {
       if (!Array.isArray(models)) return;
-      const selectedModel = await config.module.getModelPreference();
+      const selection = await config.module.resolveModelSelection(models);
+      if (!selection.success && selection.errorState !== "no_supported_models") {
+        showFeedback(selection.message, "negative");
+        return false;
+      }
+      const selectedModel = selection.model;
+      models = selection.models;
       const placeholder = document.createElement("option");
       placeholder.value = "";
-      placeholder.textContent = config.modelPlaceholder;
+      placeholder.textContent = "No supported models available";
 
       const ungroupedOptions = [];
       const groupedOptions = new Map();
@@ -545,11 +552,10 @@ function addTenantSettings() {
         if (container) ungroupedOptions.push(container);
       });
 
-      modelInput.replaceChildren(placeholder, ...ungroupedOptions);
-      const selectedModelExists = Array.from(modelInput.options).some((option) => option.value === selectedModel);
-      modelInput.value = selectedModelExists ? selectedModel : "";
-      if (selectedModel && !selectedModelExists) await config.module.saveModelPreference("");
-      modelsLoaded = true;
+      modelInput.replaceChildren(...(models.length ? ungroupedOptions : [placeholder]));
+      modelInput.value = selectedModel;
+      modelInput.disabled = models.length === 0;
+      return true;
     }
 
     async function refreshKeyUI() {
@@ -567,23 +573,23 @@ function addTenantSettings() {
 
     async function loadModels(showSuccess = false) {
       await ready;
-      if (!hasKey || modelsLoaded) return;
+      if (!hasKey) return;
+      clearFeedback();
       setBusy(true);
-      const result = await config.module.testStoredConnection();
-      setBusy(false);
-      if (!result.success) {
-        showFeedback(result.message, "negative");
-        return;
+      try {
+        const result = await config.module.testStoredConnection();
+        if (result.success || result.errorState === "no_supported_models") {
+          if (!await updateModelList(result.models)) return;
+        }
+        if (!result.success || showSuccess) showFeedback(result.message, result.success ? "positive" : "negative");
+      } catch (error) {
+        showFeedback(`Unable to load ${config.label} models.`, "negative");
+      } finally {
+        setBusy(false);
       }
-      await updateModelList(result.models);
-      if (showSuccess) showFeedback(result.message, "positive");
     }
 
     const ready = refreshKeyUI()
-      .then(() => config.module.getModelPreference())
-      .then((model) => {
-        modelInput.value = model;
-      })
       .catch(() => showFeedback(`Unable to read ${config.label} settings.`, "negative"));
 
     modelInput.addEventListener("change", async () => {
@@ -591,6 +597,7 @@ function addTenantSettings() {
         await config.module.saveModelPreference(modelInput.value);
         modelInput.value = await config.module.getModelPreference();
       } catch (error) {
+        modelInput.value = AiModelPolicy.normalizeId(config.provider, await config.module.getModelPreference());
         showFeedback(`Unable to save the ${config.label} model.`, "negative");
       }
     });
@@ -609,11 +616,12 @@ function addTenantSettings() {
       setBusy(false);
 
       if (!result.success) {
+        if (!hasKey && result.errorState === "no_supported_models") await updateModelList(result.models);
         showFeedback(`${result.message}${hasKey ? " Your existing API key was not changed." : ""}`, "negative");
         return;
       }
 
-      await updateModelList(result.models);
+      if (!await updateModelList(result.models)) return;
       await refreshKeyUI();
       showFeedback(result.message, "positive");
     });
@@ -623,8 +631,11 @@ function addTenantSettings() {
       try {
         await config.module.removeKey();
         await refreshKeyUI();
-        modelsLoaded = false;
-        await updateModelList([]);
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Save or test your key to load supported models";
+        modelInput.replaceChildren(placeholder);
+        modelInput.disabled = true;
         showFeedback(`${config.label} API key removed.`, "positive");
       } catch (error) {
         showFeedback(`Unable to remove the ${config.label} API key.`, "negative");
@@ -645,11 +656,7 @@ function addTenantSettings() {
 
     testButton.addEventListener("click", async () => {
       clearFeedback();
-      setBusy(true);
-      const result = await config.module.testStoredConnection();
-      setBusy(false);
-      await updateModelList(result.models);
-      showFeedback(result.message, result.success ? "positive" : "negative");
+      await loadModels(true);
     });
 
     input.addEventListener("keydown", (event) => {
@@ -661,6 +668,7 @@ function addTenantSettings() {
 
   const geminiSettings = setupAiProviderSettings({
     label: "Gemini",
+    provider: "gemini",
     module: GeminiAI,
     inputId: "geminiApiKeyInput",
     saveButtonId: "saveGeminiKeyBtn",
@@ -673,12 +681,12 @@ function addTenantSettings() {
     maskedKeyId: "geminiMaskedKey",
     keyInputLabelId: "geminiKeyInputLabel",
     feedbackId: "geminiKeyFeedback",
-    modelInputId: "geminiModelSelect",
-    modelPlaceholder: "Select a Gemini model"
+    modelInputId: "geminiModelSelect"
   });
 
   const openRouterSettings = setupAiProviderSettings({
     label: "OpenRouter",
+    provider: "openrouter",
     module: OpenRouterAI,
     inputId: "openRouterApiKeyInput",
     saveButtonId: "saveOpenRouterKeyBtn",
@@ -691,8 +699,7 @@ function addTenantSettings() {
     maskedKeyId: "openRouterMaskedKey",
     keyInputLabelId: "openRouterKeyInputLabel",
     feedbackId: "openRouterKeyFeedback",
-    modelInputId: "openRouterModelSelect",
-    modelPlaceholder: "Select an OpenAI or Gemini model"
+    modelInputId: "openRouterModelSelect"
   });
 
   const providerSelect = document.getElementById("aiProviderSelect");

@@ -29,3 +29,8 @@ skills-lock.json
 
 # Local Test Files
 test*
+
+# Versioned AI regression tests
+!/test/
+/test/*
+!/test/*.test.js

@@ -47,7 +47,8 @@ var GeminiAI = (function () {
       return {
         id: "openrouter",
         label: "OpenRouter",
-        modelPreference: await OpenRouterAI.getModelPreference(),
+        getModelPreference: OpenRouterAI.getModelPreference,
+        testStoredConnection: OpenRouterAI.testStoredConnection,
         getKey: OpenRouterAI.getKey,
         promptKeySetup: OpenRouterAI.promptKeySetup,
         callApi: OpenRouterAI.callApi
@@ -57,7 +58,8 @@ var GeminiAI = (function () {
     return {
       id: "gemini",
       label: "Gemini",
-      modelPreference: await getModelPreference(),
+      getModelPreference,
+      testStoredConnection,
       getKey,
       promptKeySetup,
       callApi
@@ -140,29 +142,62 @@ var GeminiAI = (function () {
       if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
         chrome.storage.local.get([MODEL_STORAGE_KEY], (result) => {
           const storedModel = result[MODEL_STORAGE_KEY] || "";
-          resolve(storedModel === "auto" ? "" : storedModel);
+          resolve(storedModel);
         });
       } else {
         const storedModel = localStorage.getItem(MODEL_STORAGE_KEY) || "";
-        resolve(storedModel === "auto" ? "" : storedModel);
+        resolve(storedModel);
       }
     });
   }
 
   /**
-   * Saves Gemini model preference
+   * Writes model settings, optionally together with a validated key.
    */
-  async function saveModelPreference(model) {
-    return new Promise((resolve) => {
-      const trimmedModel = (model || "").trim();
-      const val = trimmedModel === "auto" ? "" : trimmedModel;
+  async function saveValues(values) {
+    return new Promise((resolve, reject) => {
       if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ [MODEL_STORAGE_KEY]: val }, () => resolve(true));
+        chrome.storage.local.set(values, () => {
+          if (chrome.runtime?.lastError) reject(chrome.runtime.lastError);
+          else resolve(true);
+        });
       } else {
-        localStorage.setItem(MODEL_STORAGE_KEY, val);
+        const written = [];
+        try {
+          for (const [key, value] of Object.entries(values)) {
+            const previous = localStorage.getItem(key);
+            localStorage.setItem(key, value);
+            written.push([key, previous]);
+          }
+        } catch (error) {
+          for (const [key, previous] of written.reverse()) {
+            if (previous === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, previous);
+          }
+          throw error;
+        }
         resolve(true);
       }
     });
+  }
+
+  async function saveModelPreference(model) {
+    const value = AiModelPolicy.normalizeId("gemini", model);
+    if (!AiModelPolicy.isSupported("gemini", value)) throw new Error("Unsupported Gemini model.");
+    return saveValues({ [MODEL_STORAGE_KEY]: value });
+  }
+
+  async function resolveModelSelection(models, candidateKey) {
+    try {
+      return await AiModelPolicy.resolveSelection(
+        "gemini", models, getModelPreference,
+        candidateKey === undefined ? saveModelPreference :
+          (model) => saveValues({ [MODEL_STORAGE_KEY]: model, [KEY_STORAGE_KEY]: candidateKey }),
+        candidateKey !== undefined
+      );
+    } catch (error) {
+      return connectionError(error?.message || "Unable to save the model selection.", "storage_error", candidateKey);
+    }
   }
 
   function redactKey(message, apiKey) {
@@ -188,26 +223,28 @@ var GeminiAI = (function () {
     if (!trimmedKey) return connectionError("Gemini API key is required.", "missing_key");
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        const errorState = [400, 401, 403].includes(response.status) ? "invalid_key" : response.status === 429 ? "rate_limit" : "api_error";
-        const fallbackMessage = errorState === "invalid_key" ? "Invalid or unauthorized Gemini API key." : `Gemini API error (${response.status}).`;
-        return connectionError(data?.error?.message || fallbackMessage, errorState, trimmedKey);
-      }
-
-      if (!data || !Array.isArray(data.models)) {
-        return connectionError("Gemini returned an unexpected response while validating the API key.");
-      }
-
-      const models = data.models
-        .filter((model) => model.supportedGenerationMethods && model.supportedGenerationMethods.includes("generateContent"))
-        .map((model) => model.name.replace(/^models\//, ""));
-
-      if (models.length === 0) {
-        return connectionError("The API key connected successfully, but no Gemini models supporting content generation are available.");
-      }
+      const discovered = [];
+      const seenTokens = new Set();
+      let pageToken = "";
+      do {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(trimmedKey)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+        const response = await fetch(endpoint);
+        const data = await response.json();
+        if (!response.ok) {
+          const errorState = [400, 401, 403].includes(response.status) ? "invalid_key" : response.status === 429 ? "rate_limit" : "api_error";
+          return connectionError(data?.error?.message || `Gemini API error (${response.status}).`, errorState, trimmedKey);
+        }
+        if (!data || !Array.isArray(data.models) || (data.nextPageToken != null && typeof data.nextPageToken !== "string")) {
+          return connectionError("Gemini returned an unexpected model discovery response.");
+        }
+        discovered.push(...data.models
+          .filter((model) => Array.isArray(model?.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
+          .map((model) => model.name));
+        pageToken = data.nextPageToken || "";
+        if (pageToken && seenTokens.has(pageToken)) return connectionError("Gemini model discovery returned a repeated page token.");
+        seenTokens.add(pageToken);
+      } while (pageToken);
+      const models = AiModelPolicy.filterModels("gemini", discovered).map((model) => model.id);
 
       return { success: true, message: "Connection successful.", models };
     } catch (error) {
@@ -224,24 +261,22 @@ var GeminiAI = (function () {
     const result = await testConnection(trimmedKey);
     if (!result.success) return result;
 
-    try {
-      await saveKey(trimmedKey);
-      return { ...result, message: "Connection successful. Gemini API key saved." };
-    } catch (error) {
-      return connectionError(error?.message || "The API key is valid, but it could not be saved.", "storage_error", trimmedKey);
-    }
+    const selection = await resolveModelSelection(result.models, trimmedKey);
+    if (!selection.success) return selection;
+    return { ...result, ...selection, message: "Connection successful. Gemini API key saved." };
   }
 
   /**
    * Tests the currently stored Gemini API key.
    */
   async function testStoredConnection() {
-    const apiKey = await getKey();
-    return testConnection(apiKey);
+    const result = await testConnection(await getKey());
+    if (!result.success) return result;
+    return { ...result, ...await resolveModelSelection(result.models) };
   }
 
   /**
-   * Dynamically queries the Google Generative Language API for models supporting generateContent
+   * Queries the complete Gemini catalog and returns only supported recommendation models
    */
   async function fetchAvailableModels(apiKey) {
     const result = await testConnection(apiKey);
@@ -318,9 +353,9 @@ var GeminiAI = (function () {
   /**
    * Calls the exact Gemini model selected by the user.
    */
-  async function callApi(sanitizedData, apiKey) {
-    const userModelPref = await getModelPreference();
-    if (!userModelPref) {
+  async function callApi(sanitizedData, apiKey, resolvedModel) {
+    const userModelPref = AiModelPolicy.normalizeId("gemini", resolvedModel === undefined ? await getModelPreference() : resolvedModel);
+    if (!AiModelPolicy.isSupported("gemini", userModelPref)) {
       return connectionError("Select a Gemini model in CPI Helper AI Settings before generating a recommendation.", "missing_model");
     }
 
@@ -475,16 +510,21 @@ Please generate structured JSON with:
     const provider = await getActiveProvider();
     if (provider.error) return { success: false, errorState: "provider_error", message: provider.error };
 
-    const modelPreference = provider.modelPreference;
-    if (!modelPreference) {
-      return {
-        success: false,
-        errorState: "missing_model",
-        message: `Select a ${provider.label} model in CPI Helper AI Settings before generating a recommendation.`,
-        provider: provider.id,
-        providerLabel: provider.label
-      };
+    const promptVersion = provider.id === "openrouter" ? "2" : AI_PROMPT_VERSION;
+    const withProvider = (result) => ({ ...result, provider: provider.id, providerLabel: provider.label });
+    let apiKey = await provider.getKey();
+    if (!apiKey) apiKey = await provider.promptKeySetup();
+    if (!apiKey) return withProvider({ success: false, errorState: "missing_key", message: `${provider.label} API key is required.` });
+
+    // Key setup may select a model. Read it afterwards, and initialize legacy
+    // or missing preferences even when credentials were already configured.
+    let modelPreference = await provider.getModelPreference();
+    if (!AiModelPolicy.isSupported(provider.id, modelPreference) || modelPreference !== AiModelPolicy.normalizeId(provider.id, modelPreference)) {
+      const selection = await provider.testStoredConnection();
+      if (!selection.success) return withProvider(selection);
+      modelPreference = selection.model;
     }
+    modelPreference = AiModelPolicy.normalizeId(provider.id, modelPreference);
     // Keep existing Gemini cache entries compatible while namespacing all
     // additional providers to prevent cross-provider cache collisions.
     const cachePreference = provider.id === "gemini" ? modelPreference : `${provider.id}:${modelPreference}`;
@@ -493,11 +533,11 @@ Please generate structured JSON with:
 
     if (cache) {
       try {
-        signature = await cache.createAiFixSignature(sanitizedData, cachePreference, AI_PROMPT_VERSION);
+        signature = await cache.createAiFixSignature(sanitizedData, cachePreference, promptVersion);
         if (!options.forceRefresh) {
           const cachedEntry = await cache.getCachedAiFix(signature, {
             modelPreference: cachePreference,
-            promptVersion: AI_PROMPT_VERSION
+            promptVersion: promptVersion
           });
           if (cachedEntry) {
             return {
@@ -522,20 +562,8 @@ Please generate structured JSON with:
     }
 
     const request = (async () => {
-      let apiKey = await provider.getKey();
-      if (!apiKey) apiKey = await provider.promptKeySetup();
-      if (!apiKey) {
-        return {
-          success: false,
-          errorState: "missing_key",
-          message: `${provider.label} API key is required.`,
-          provider: provider.id,
-          providerLabel: provider.label
-        };
-      }
-
       if (options.onBeforeRequest) options.onBeforeRequest();
-      const result = await provider.callApi(sanitizedData, apiKey);
+      const result = await provider.callApi(sanitizedData, apiKey, modelPreference);
       if (result.success) {
         const generatedAt = Date.now();
         const providerResult = { ...result, provider: provider.id, providerLabel: provider.label };
@@ -543,7 +571,7 @@ Please generate structured JSON with:
           await cache.saveCachedAiFix(signature, providerResult, {
             model: result.usedModel || modelPreference,
             modelPreference: cachePreference,
-            promptVersion: AI_PROMPT_VERSION
+            promptVersion: promptVersion
           });
         }
         return { ...providerResult, fromCache: false, generatedAt };
@@ -748,7 +776,10 @@ Please generate structured JSON with:
     testStoredConnection,
     getModelPreference,
     saveModelPreference,
+    resolveModelSelection,
     fetchAvailableModels,
+    promptKeySetup,
+    callApi,
     sanitizeErrorData,
     getAiFix,
     analyzeAndRender,
