@@ -24,6 +24,7 @@ function load(initial = {}, options = {}) {
     console,
     Map,
     Set,
+    TextDecoder,
     chrome: {
       runtime,
       storage: {
@@ -284,6 +285,8 @@ class Element {
     this.value = "";
     this.disabled = false;
     this.dataset = {};
+    this.style = {};
+    this.controls = new Map();
     this.classList = { add() {}, remove() {}, toggle() {} };
   }
   get options() {
@@ -304,6 +307,12 @@ class Element {
     await settle();
   }
   focus() {}
+  querySelector(selector) {
+    const action = selector.match(/^\[data-ai-action="([^"]+)"\]$/)?.[1];
+    if (!action || !this.innerHTML?.includes(`data-ai-action="${action}"`)) return null;
+    if (!this.controls.has(action)) this.controls.set(action, new Element("button"));
+    return this.controls.get(action);
+  }
 }
 async function settle() {
   for (let count = 0; count < 6; count++) await new Promise(setImmediate);
@@ -437,9 +446,10 @@ for (const provider of providers) {
   test(`${provider.id}: Fix with AI rereads the model selected during credential setup`, async () => {
     const options = { promptKey: "new-key", ...(provider.id === "gemini" ? { geminiModels: [geminiModel(provider.first)] } : { routerModels: [routerModel(provider.first)] }) };
     const { context, stored } = load({ aiProvider: provider.id, [provider.preference]: provider.second }, options);
+    const signatures = [];
     context.AiFixCache = {
       async createAiFixSignature(data, model) {
-        assert.equal(model, provider.id === "gemini" ? provider.first : `${provider.id}:${provider.first}`);
+        signatures.push(model);
         return model;
       },
       async getCachedAiFix() {
@@ -449,6 +459,7 @@ for (const provider of providers) {
     };
     assert.equal((await context.GeminiAI.getAiFix({})).usedModel, provider.first);
     assert.equal(stored[provider.preference], provider.first);
+    assert.equal(signatures.at(-1), provider.id === "gemini" ? provider.first : `${provider.id}:${provider.first}`);
   });
 
   test(`${provider.id}: first-use model storage failure does not generate`, async () => {
@@ -612,4 +623,349 @@ test("OpenRouter dropdown groups preferred and newly discovered models under one
   assert.deepEqual(groups[0].children.map((option) => option.value), ids.slice(0, 2));
   assert.deepEqual(groups[1].children.map((option) => option.value), ids.slice(2));
   assert.equal(harness.stored.openRouterModel, "openai/gpt-4.1-mini");
+});
+
+test("a cached fix for an undiscovered saved model needs no network discovery", async () => {
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "vendor/custom" }, {
+    fetch: async () => { throw new Error("Offline"); }
+  });
+  context.AiFixCache = {
+    async createAiFixSignature(data, model) { assert.equal(model, "openrouter:vendor/custom"); return model; },
+    async getCachedAiFix() { return { response: { success: true, data: recommendation }, createdAt: 123 }; }
+  };
+  const result = await context.GeminiAI.getAiFix({});
+  assert.equal(result.fromCache, true);
+  assert.equal(result.generatedAt, 123);
+  assert.equal(calls.length, 0);
+});
+
+test("a cached fix remains available without credential setup", async () => {
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterModel: "vendor/custom" }, {
+    onPrompt: () => assert.fail("cached results require no credential setup")
+  });
+  context.AiFixCache = {
+    async createAiFixSignature() { return "signature"; },
+    async getCachedAiFix() { return { response: { success: true, data: recommendation }, createdAt: 123 }; }
+  };
+  assert.equal((await context.GeminiAI.getAiFix({})).fromCache, true);
+  assert.equal(calls.length, 0);
+});
+
+test("discovery changing a saved model checks the resolved model's cache before generation", async () => {
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "retired/model" });
+  const lookups = [];
+  context.AiFixCache = {
+    async createAiFixSignature(data, model) { return model; },
+    async getCachedAiFix(signature) {
+      lookups.push(signature);
+      return lookups.length === 2 ? { response: { success: true, data: recommendation }, createdAt: 123 } : null;
+    }
+  };
+  assert.equal((await context.GeminiAI.getAiFix({})).fromCache, true);
+  assert.deepEqual(lookups, ["openrouter:retired/model", "openrouter:openai/gpt-4.1-mini"]);
+  assert.equal(calls.some((call) => call.init?.method === "POST"), false);
+});
+
+test("selected model capabilities survive reopening and restrict structured-output routing", async () => {
+  const id = "vendor/structured";
+  const first = load({}, { routerModels: [routerModel(id)] });
+  await first.context.OpenRouterAI.validateAndSaveKey("key");
+  const reopened = load({ ...first.stored, aiProvider: "openrouter" });
+  assert.equal((await reopened.context.GeminiAI.getAiFix({})).success, true);
+  assert.equal(reopened.calls.length, 1, "fresh capability metadata avoids discovery on a cache miss");
+  const payload = JSON.parse(reopened.calls[0].init.body);
+  assert.equal(payload.model, id);
+  assert.equal(payload.stream, true);
+  assert.equal(payload.response_format.type, "json_schema");
+  assert.equal(payload.response_format.json_schema.strict, true);
+  assert.equal(payload.provider.require_parameters, true);
+  assert.match(payload.messages[0].content, /three concrete recommended steps/);
+});
+
+for (const parameters of [[], ["response_format"], ["structured_outputs"]]) {
+  test(`native schema routing requires both advertised capabilities: ${parameters.join(",") || "none"}`, async () => {
+    const harness = load({ openRouterModel: "vendor/text" }, { routerModels: [{ ...routerModel("vendor/text"), supported_parameters: parameters }] });
+    await harness.context.OpenRouterAI.testConnection("key");
+    assert.equal((await harness.context.OpenRouterAI.callApi(harness.context.GeminiAI.sanitizeErrorData({}), "key")).success, true);
+    const payload = JSON.parse(harness.calls.at(-1).init.body);
+    assert.equal(payload.response_format, undefined);
+    assert.equal(payload.provider, undefined);
+    assert.equal(payload.stream, true);
+  });
+}
+
+test("expired model capabilities require discovery only after a cache miss", async () => {
+  const harness = load({}, { routerModels: [routerModel("vendor/structured")] });
+  await harness.context.OpenRouterAI.validateAndSaveKey("key");
+  const metadata = JSON.parse(harness.stored.openRouterModelCapabilities);
+  metadata.discoveredAt = 0;
+  const reopened = load({ ...harness.stored, aiProvider: "openrouter", openRouterModelCapabilities: JSON.stringify(metadata) }, { routerModels: [routerModel("vendor/structured")] });
+  assert.equal((await reopened.context.GeminiAI.getAiFix({})).success, true);
+  assert.equal(reopened.calls.length, 3);
+});
+
+test("force refresh bypasses a cached recommendation", async () => {
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" });
+  context.AiFixCache = {
+    async createAiFixSignature() { return "signature"; },
+    async getCachedAiFix() { assert.fail("force refresh must not read the cached result"); },
+    async saveCachedAiFix() {}
+  };
+  assert.equal((await context.GeminiAI.getAiFix({}, { forceRefresh: true })).fromCache, false);
+  assert.equal(calls.length, 1);
+});
+
+const delta = (content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\r\n\r\n`;
+function streamResponse(chunks, beforeRead = async () => {}) {
+  let index = 0;
+  return {
+    ok: true,
+    headers: { get: () => "text/event-stream" },
+    body: { getReader: () => ({
+      async read() {
+        await beforeRead(index);
+        return index < chunks.length ? { value: chunks[index++], done: false } : { done: true };
+      },
+      async cancel() {},
+      releaseLock() {}
+    }) }
+  };
+}
+
+test("fragmented SSE displays only completed fields and preserves escaped strings and UTF-8", async () => {
+  const rec = { ...recommendation, summary: 'Fix "café" } <img src=x onerror=alert(1)>', recommendedSteps: ["Check the certificate", "Check trust", "Retry"] };
+  const json = JSON.stringify(rec);
+  const cut = json.indexOf(',"likelyCauses"');
+  const wire = ": OPENROUTER PROCESSING\r\n\r\n" + delta(json.slice(0, cut)) + delta(json.slice(cut)) + "data: [DONE]\r\n\r\n";
+  const bytes = new TextEncoder().encode(wire);
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += 7) chunks.push(bytes.slice(offset, offset + 7));
+  const { context } = load({ openRouterModel: "openai/gpt-4.1-mini" }, { fetch: async () => streamResponse(chunks) });
+  const progress = [];
+  const result = await context.OpenRouterAI.callApi(context.GeminiAI.sanitizeErrorData({}), "key", undefined, { onProgress: (value) => progress.push(plain(value)) });
+  assert.equal(result.success, true);
+  assert.deepEqual(plain(result.data), rec);
+  assert.ok(progress.some((value) => value.summary === rec.summary && value.recommendedSteps === undefined));
+  assert.deepEqual(progress.at(-1).recommendedSteps, rec.recommendedSteps);
+  assert.equal(progress.some((value) => value.summary && value.summary !== rec.summary), false);
+});
+
+test("concurrent callers share generation, receive progress, and cache only after completion", async () => {
+  const json = JSON.stringify(recommendation);
+  const cut = json.indexOf(',"likelyCauses"');
+  let resume;
+  const paused = new Promise((resolve) => { resume = resolve; });
+  const chunks = [delta(json.slice(0, cut)), delta(json.slice(cut)) + "data: [DONE]\n\n"].map((chunk) => new TextEncoder().encode(chunk));
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+    fetch: async () => streamResponse(chunks, async (index) => { if (index === 1) await paused; })
+  });
+  const cached = [];
+  context.AiFixCache = {
+    async createAiFixSignature() { return "signature"; },
+    async getCachedAiFix() { return null; },
+    async saveCachedAiFix(signature, result) { cached.push(plain(result)); }
+  };
+  const firstProgress = [];
+  const secondProgress = [];
+  const first = context.GeminiAI.getAiFix({}, { onProgress: (value) => firstProgress.push(plain(value)) });
+  await settle();
+  assert.equal(firstProgress.at(-1).summary, recommendation.summary);
+  assert.equal(cached.length, 0);
+  const second = context.GeminiAI.getAiFix({}, { onProgress: (value) => secondProgress.push(plain(value)) });
+  await settle();
+  assert.equal(secondProgress.at(-1).summary, recommendation.summary);
+  resume();
+  assert.equal((await first).success, true);
+  assert.equal((await second).success, true);
+  assert.equal(calls.length, 1);
+  assert.equal(cached.length, 1);
+  assert.deepEqual(secondProgress.at(-1).recommendedSteps, recommendation.recommendedSteps);
+});
+
+for (const failure of ["interrupted", "provider_error", "length", "invalid_json"]) {
+  test(`stream ${failure} never caches a preliminary recommendation`, async () => {
+    const first = delta('{"summary":"Preliminary"');
+    const ending = failure === "provider_error" ? 'data: {"error":{"message":"Provider failed"}}\n\n'
+      : failure === "length" ? 'data: {"choices":[{"finish_reason":"length","delta":{}}]}\n\ndata: [DONE]\n\n'
+      : failure === "invalid_json" ? "data: [DONE]\n\n" : "";
+    const { context } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+      fetch: async () => streamResponse([new TextEncoder().encode(first + ending)])
+    });
+    context.AiFixCache = {
+      async createAiFixSignature() { return "signature"; },
+      async getCachedAiFix() { return null; },
+      async saveCachedAiFix() { assert.fail("incomplete recommendations must not be cached"); }
+    };
+    const result = await context.GeminiAI.getAiFix({});
+    assert.equal(result.success, false);
+    assert.ok(result.errorState);
+  });
+}
+
+test("loading appears immediately and completed streaming fields are rendered as text", async () => {
+  const json = JSON.stringify({ ...recommendation, summary: "<script>alert(1)</script>" });
+  const cut = json.indexOf(',"likelyCauses"');
+  let resume;
+  const paused = new Promise((resolve) => { resume = resolve; });
+  const { context } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+    fetch: async () => streamResponse([delta(json.slice(0, cut)), delta(json.slice(cut)) + "data: [DONE]\n\n"].map((chunk) => new TextEncoder().encode(chunk)), async (index) => { if (index === 1) await paused; })
+  });
+  const popups = [];
+  context.document = { createElement: (tag) => new Element(tag), getElementById: () => null };
+  context.showBigPopup = (element) => popups.push(element);
+  context.htmlEscape = (text) => String(text).replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  context.setTimeout = () => {};
+  const request = context.GeminiAI.handleGetRecommendation({});
+  assert.equal(popups.length, 1, "loading is synchronous with the click");
+  await settle();
+  assert.match(popups[0].children[0].textContent, /Generating/);
+  const summary = popups[0].children.find((child) => child.tagName === "p");
+  assert.equal(summary.textContent, "<script>alert(1)</script>");
+  assert.equal(summary.innerHTML, undefined);
+  resume();
+  await request;
+  assert.equal(popups.length, 2, "complete result replaces the preliminary view");
+});
+
+test("embedded Fix with AI keeps loading, streaming and the result in the trace popup", async () => {
+  let resume;
+  const paused = new Promise((resolve) => { resume = resolve; });
+  const json = JSON.stringify(recommendation);
+  const cut = json.indexOf(',"likelyCauses"');
+  const { context } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+    fetch: async () => streamResponse([delta(json.slice(0, cut)), delta(json.slice(cut)) + "data: [DONE]\n\n"].map((chunk) => new TextEncoder().encode(chunk)), async (index) => { if (index === 1) await paused; })
+  });
+  const panel = new Element();
+  context.document = { createElement: (tag) => new Element(tag), getElementById: () => null };
+  let popups = 0;
+  context.showBigPopup = () => { popups++; };
+  context.htmlEscape = (text) => String(text);
+  context.setTimeout = () => {};
+  const request = context.GeminiAI.handleGetRecommendation({}, { container: panel });
+  try {
+    assert.equal(popups, 0, "embedded analysis must not open or replace a popup");
+    assert.match(panel.children[0].innerHTML, /Evaluating CPI logs/);
+    await settle();
+    assert.equal(panel.children[0].children.find((child) => child.tagName === "p").textContent, recommendation.summary);
+  } finally { resume(); await request; }
+  assert.equal(popups, 0);
+  assert.match(panel.children[0].innerHTML, /Recommended Steps/);
+});
+
+test("trace Error button selects Fix with AI and retains the trace tabs on regeneration", async () => {
+  const { context, calls } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" });
+  const elements = new Map();
+  context.document = { createElement: (tag) => new Element(tag), getElementById: (id) => elements.get(id) };
+  context.createElementFromHTML = (markup) => {
+    const element = new Element(markup.match(/<\s*(\w+)/)[1]);
+    element.id = markup.match(/id="([^"]+)"/)?.[1];
+    element.name = markup.match(/name="([^"]+)"/)?.[1];
+    element.checked = markup.includes('checked="checked"');
+    element.click = async () => {
+      for (const other of elements.values()) if (other.name === element.name) other.checked = false;
+      element.checked = true;
+      await element.onclick?.({});
+    };
+    if (element.id) elements.set(element.id, element);
+    return element;
+  };
+  context.showBigPopup = () => assert.fail("trace analysis must preserve its existing popup");
+  context.htmlEscape = (text) => String(text);
+  context.cpiData = { integrationFlowId: "Flow" };
+  context.childCount = 17;
+  context.n = 0;
+  context.targetElements = [{ Error: "Script failed" }];
+  context.objects = ["Properties", "Headers", "Body", "Log", "Info"].map((label, index) => ({ label, content: `${label} content`, active: index === 0 }));
+  const trace = read("scripts/inline-trace.js");
+  const start = trace.indexOf("            if (targetElements[n].Error) {");
+  vm.runInContext(trace.slice(start, trace.indexOf("            let label =", start)), context);
+  const ui = read("scripts/ui.js");
+  vm.runInContext(ui.slice(ui.indexOf("async function createTabHTML("), ui.indexOf("// Function to show license popup")), context);
+  const tabs = await context.createTabHTML(context.objects, "tracetab-17");
+  const properties = tabs.children[2];
+  const errorButton = context.objects[5].content.children[1];
+  errorButton.onclick();
+  await settle();
+  assert.equal(elements.get("tab-tracetab-17-6").checked, true);
+  assert.equal(elements.get("tab-tracetab-17-0").checked, false);
+  assert.equal(properties.innerHTML, "Properties content");
+  const panel = elements.get("tracetab-17-6-content").children[0];
+  assert.match(panel.children[0].innerHTML, /Recommended Steps/);
+  assert.equal(calls.length, 1);
+  await panel.children[0].querySelector('[data-ai-action="regenerate"]').onclick();
+  assert.match(panel.children[0].innerHTML, /Recommended Steps/);
+  assert.equal(calls.length, 2);
+  assert.equal(properties.innerHTML, "Properties content");
+  await elements.get("tab-tracetab-17-6").click();
+  assert.equal(calls.length, 2, "revisiting the tab retains its recommendation");
+});
+
+test("embedded API errors and retry stay inside their original panel", async () => {
+  let attempts = 0;
+  const { context } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+    fetch: async () => ++attempts === 1 ? response({ error: { message: "Unavailable" } }, 500) : response({ choices: [{ message: { content: JSON.stringify(recommendation) } }] })
+  });
+  context.document = { createElement: (tag) => new Element(tag) };
+  context.showBigPopup = () => assert.fail("embedded errors and retries must not open popups");
+  context.htmlEscape = (text) => String(text);
+  const panel = new Element();
+  await context.GeminiAI.handleGetRecommendation({}, { container: panel });
+  assert.match(panel.children[0].innerHTML, /Unavailable/);
+  await panel.children[0].querySelector('[data-ai-action="retry"]').onclick();
+  assert.equal(attempts, 2);
+  assert.match(panel.children[0].innerHTML, /Recommended Steps/);
+});
+
+test("completion from an older analysis cannot replace the latest modal", async () => {
+  let resume;
+  const paused = new Promise((resolve) => { resume = resolve; });
+  let requests = 0;
+  const { context } = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, {
+    fetch: async () => {
+      const number = ++requests;
+      if (number === 1) await paused;
+      return response({ choices: [{ message: { content: JSON.stringify({ ...recommendation, summary: `Result ${number}` }) } }] });
+    }
+  });
+  const popups = [];
+  context.document = { createElement: (tag) => new Element(tag), getElementById: () => null };
+  context.showBigPopup = (element) => popups.push(element);
+  context.htmlEscape = (text) => String(text);
+  context.setTimeout = () => {};
+  const first = context.GeminiAI.handleGetRecommendation({ errorMessage: "First error" });
+  await settle();
+  await context.GeminiAI.handleGetRecommendation({ errorMessage: "Second error" });
+  assert.match(popups.at(-1).innerHTML, /Result 2/);
+  const count = popups.length;
+  resume();
+  await first;
+  assert.equal(popups.length, count);
+  assert.match(popups.at(-1).innerHTML, /Result 2/);
+});
+
+test("sidebar Fix with AI reuses the context already fetched for the error popup", async () => {
+  const data = { errors: ["Failure"], status: "FAILED", customstatus: "", property: [], duration: "1ms" };
+  let fetches = 0;
+  let aiContext;
+  const button = { getAttribute: () => "message" };
+  const tasks = [];
+  const context = {
+    errorPopupOpen: async () => { fetches++; return data; },
+    log: { debug() {}, error() {} },
+    getStatusColor: () => "", getStatusIcon: () => "",
+    cpiData: { integrationFlowId: "Flow" },
+    document: { querySelectorAll: () => [button] },
+    GeminiAI: { handleGetRecommendation(value) { aiContext = value; } },
+    $: Object.assign(() => ({ toast() {}, hasClass: () => false }), { toast(options) { if (options.onVisible) tasks.push(Promise.resolve(options.onVisible())); } })
+  };
+  vm.createContext(context);
+  const source = read("scripts/contentScript.js");
+  vm.runInContext(source.slice(source.indexOf("async function popupTable("), source.indexOf("\nfunction lookupError(")), context);
+  context.apireserror("message");
+  await Promise.all(tasks);
+  await settle();
+  await button.onclick({ stopPropagation() {}, currentTarget: button });
+  assert.equal(fetches, 1);
+  assert.equal(aiContext.errorMessage, "Failure");
+  assert.equal(aiContext.integrationFlowName, "Flow");
 });

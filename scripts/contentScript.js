@@ -1468,9 +1468,10 @@ function formatDuration(durationMs) {
 }
 
 async function errorPopupOpen(MessageGuid) {
-  var resp = await getMessageProcessingLogRuns(MessageGuid, false);
-
-  var customHeaders = await makeCallPromise("GET", "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/MessageProcessingLogs('" + MessageGuid + "')?$format=json&$expand=CustomHeaderProperties", false);
+  var [resp, customHeaders] = await Promise.all([
+    getMessageProcessingLogRuns(MessageGuid, false),
+    makeCallPromise("GET", "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/MessageProcessingLogs('" + MessageGuid + "')?$format=json&$expand=CustomHeaderProperties", false)
+  ]);
   customHeaders = JSON.parse(customHeaders).d;
 
   //Duration
@@ -1480,11 +1481,11 @@ async function errorPopupOpen(MessageGuid) {
   stepStop.setTime(stepStop.getTime() - stepStop.getTimezoneOffset() * 60 * 1000);
 
   //custom Headers and Properties
-  propertyArray = [];
+  const propertyArray = [];
   customHeaders?.CustomHeaderProperties?.results.forEach((element) => propertyArray.push(element?.Name + ": " + element?.Value?.substr(0, 150)));
   // Error Collect
-  errorDetails = [];
-  if (resp != null || resp.length != 0) {
+  const errorDetails = [];
+  if (resp?.length) {
     let error = false;
     for (var i = 0; i < resp.length; i++) {
       if (resp[i].Error) {
@@ -1506,8 +1507,9 @@ async function errorPopupOpen(MessageGuid) {
     property: propertyArray,
   };
 }
-async function popupTable(message) {
+async function popupTable(message, onErrorData) {
   let data = await errorPopupOpen(message);
+  if (onErrorData) onErrorData(data);
   log.debug(data);
   let popupHTML = `<table class="ui celled very compact table">
   <tbody>
@@ -1545,6 +1547,7 @@ async function popupTable(message) {
   return popupHTML;
 }
 function apireserror(message) {
+  let errorData;
   $(".ui.toast").toast("close");
   $.toast({
     message: "Please wait while we prepare...",
@@ -1552,7 +1555,7 @@ function apireserror(message) {
     showProgress: "bottom",
     class: $("html").hasClass("sapUiTheme-sap_horizon_dark") ? " ch_dark " : "",
     onVisible: async () =>
-      popupTable(message)
+      popupTable(message, (data) => { errorData = data; })
         .then((messageHtml) => {
           $(".ui.toast").toast("close");
           $.toast({
@@ -1569,10 +1572,10 @@ function apireserror(message) {
             message: messageHtml,
             onVisible: () => {
               document.querySelectorAll(".cpiHelper_getAiRecommendationBtn").forEach((btn) => {
+                if (btn.getAttribute("data-message-guid") !== message) return;
                 btn.onclick = async (e) => {
                   e.stopPropagation();
-                  const msgGuid = e.currentTarget.getAttribute("data-message-guid") || message;
-                  const errData = await errorPopupOpen(msgGuid);
+                  const errData = errorData;
                   if (typeof GeminiAI !== "undefined") {
                     GeminiAI.handleGetRecommendation({
                       errorMessage: errData.errors.join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,

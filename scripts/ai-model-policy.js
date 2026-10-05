@@ -38,6 +38,7 @@ var AiModelPolicy = (function () {
         id,
         name: preferred?.name || (typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : id),
         group: vendorGroup(id),
+        supportedParameters: Array.isArray(entry.supported_parameters) ? entry.supported_parameters.filter((parameter) => typeof parameter === "string") : [],
       };
       const existing = catalog.get(id);
       if (!existing || model.name < existing.name) catalog.set(id, model);
@@ -56,6 +57,22 @@ var AiModelPolicy = (function () {
   function isSupported(provider, value) {
     const id = normalizeId(provider, value);
     return provider === "openrouter" ? routerCatalog.has(id) : (policies[provider] || []).some((model) => model.id === id);
+  }
+
+  function supportsStructuredOutput(value) {
+    const parameters = routerCatalog.get(normalizeId("openrouter", value))?.supportedParameters || [];
+    return parameters.includes("response_format") && parameters.includes("structured_outputs");
+  }
+
+  function getOpenRouterModel(value) {
+    const model = routerCatalog.get(normalizeId("openrouter", value));
+    return model ? { ...model, supportedParameters: [...(model.supportedParameters || [])] } : null;
+  }
+
+  function restoreOpenRouterModel(model) {
+    const id = normalizeId("openrouter", model?.id);
+    if (!id || !Array.isArray(model.supportedParameters)) return;
+    routerCatalog.set(id, { id, name: typeof model.name === "string" ? model.name : id, group: vendorGroup(id), supportedParameters: model.supportedParameters.filter((parameter) => typeof parameter === "string") });
   }
 
   function filterModels(provider, discovered) {
@@ -85,5 +102,5 @@ var AiModelPolicy = (function () {
     return { success: true, models, model };
   }
 
-  return { normalizeId, isSupported, filterModels, registerOpenRouterModels, resolveSelection };
+  return { normalizeId, isSupported, supportsStructuredOutput, getOpenRouterModel, restoreOpenRouterModel, filterModels, registerOpenRouterModels, resolveSelection };
 })();

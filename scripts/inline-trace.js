@@ -228,6 +228,9 @@ async function clickTrace(e) {
                 adapterType: adapterType,
                 integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null,
               };
+              const aiPanel = document.createElement("div");
+              // Properties, Headers, Body, Log, Info, Error precede this tab.
+              const aiTabId = "tab-tracetab-" + childCount + "-" + (objects.length + 1);
 
               let innerContent = document.createElement("div");
               innerContent.classList.add("cpiHelper_traceText");
@@ -242,9 +245,7 @@ async function clickTrace(e) {
               aiBtn.innerHTML = '<i class="magic icon"></i> Fix with AI';
               aiBtn.title = "Show recommended fixes for this CPI error";
               aiBtn.onclick = () => {
-                if (typeof GeminiAI !== "undefined") {
-                  GeminiAI.handleGetRecommendation(aiContext);
-                }
+                document.getElementById(aiTabId)?.click();
               };
               innerContent.appendChild(aiBtn);
               innerContent.style.display = "block";
@@ -258,17 +259,11 @@ async function clickTrace(e) {
                 label: "Fix with AI",
                 content: async () => {
                   if (typeof GeminiAI !== "undefined") {
-                    GeminiAI.handleGetRecommendation(aiContext);
+                    GeminiAI.handleGetRecommendation(aiContext, { container: aiPanel });
+                  } else {
+                    aiPanel.textContent = "The AI module is unavailable. Reload the extension and try again.";
                   }
-                  return `
-                    <div class="ui icon message">
-                      <i class="sync alternate loading icon"></i>
-                      <div class="content">
-                        <div class="header">Fix with AI</div>
-                        <p>Opening recommended fixes and resolution steps...</p>
-                      </div>
-                    </div>
-                  `;
+                  return aiPanel;
                 },
                 active: false,
               });

@@ -10,6 +10,8 @@ var GeminiAI = (function () {
   const AI_PROMPT_VERSION = "1";
 
   const inFlightRequests = new Map();
+  let latestAnalysis = null;
+  const embeddedAnalyses = new WeakMap();
 
   async function getProviderPreference() {
     return new Promise((resolve) => {
@@ -48,6 +50,7 @@ var GeminiAI = (function () {
         id: "openrouter",
         label: "OpenRouter",
         getModelPreference: OpenRouterAI.getModelPreference,
+        restoreModelCapabilities: OpenRouterAI.restoreModelCapabilities,
         testStoredConnection: OpenRouterAI.testStoredConnection,
         getKey: OpenRouterAI.getKey,
         promptKeySetup: OpenRouterAI.promptKeySetup,
@@ -375,10 +378,10 @@ ERROR CONTEXT:
 - MPL Status: ${sanitizedData.cpiContext.status || "N/A"}
 
 Please generate structured JSON with:
-- "summary": a clear, 1-2 sentence explanation of what went wrong in SAP CPI context.
-- "likelyCauses": an array of 2-4 bullet points detailing specific technical root causes (e.g., SSL certificate missing, wrong endpoint URL, authentication failure, script null pointer).
-- "recommendedSteps": an array of 2-5 step-by-step resolution actions (e.g., import keystore certificate, check CPI security material, adjust Groovy script).
-- "warnings": an array of any caveats, risks, or security notes.
+- "summary": one short sentence explaining what went wrong in SAP CPI context.
+- "likelyCauses": at most three specific technical root causes, one short sentence each.
+- "recommendedSteps": three concrete resolution actions, one short sentence each.
+- "warnings": at most two essential caveats, risks, or security notes; empty if none.
 - "confidence": one of "low", "medium", or "high".
 `;
 
@@ -478,7 +481,7 @@ Please generate structured JSON with:
     return lastErrorResult || { errorState: "api_error", message: `The selected Gemini model (${userModelPref}) could not generate a response.` };
   }
 
-  function showAnalysisLoading() {
+  function showAnalysisLoading(target) {
     const loadingDiv = document.createElement("div");
     loadingDiv.innerHTML = `
       <div class="ui icon message">
@@ -490,10 +493,40 @@ Please generate structured JSON with:
       </div>
     `;
 
-    showBigPopup(loadingDiv, "Fix with AI", {
+    if (target) target.replaceChildren(loadingDiv);
+    else showBigPopup(loadingDiv, "Fix with AI", {
       fullscreen: false,
       closeText: "Close"
     });
+    return loadingDiv;
+  }
+
+  function renderAnalysisProgress(container, recommendation) {
+    container.replaceChildren();
+    const status = document.createElement("div");
+    status.className = "ui icon message";
+    status.textContent = "Generating recommendation — preliminary until complete...";
+    container.appendChild(status);
+    for (const [field, label] of [["summary", "Summary"], ["recommendedSteps", "Recommended Steps"], ["likelyCauses", "Likely Causes"], ["warnings", "Warnings"]]) {
+      const value = recommendation[field];
+      if (!value || (Array.isArray(value) && !value.length)) continue;
+      const heading = document.createElement("h4");
+      heading.textContent = label;
+      container.appendChild(heading);
+      if (Array.isArray(value)) {
+        const list = document.createElement(field === "recommendedSteps" ? "ol" : "ul");
+        for (const text of value) {
+          const item = document.createElement("li");
+          item.textContent = text;
+          list.appendChild(item);
+        }
+        container.appendChild(list);
+      } else {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = value;
+        container.appendChild(paragraph);
+      }
+    }
   }
 
   function getCacheModule() {
@@ -512,26 +545,20 @@ Please generate structured JSON with:
 
     const promptVersion = provider.id === "openrouter" ? "2" : AI_PROMPT_VERSION;
     const withProvider = (result) => ({ ...result, provider: provider.id, providerLabel: provider.label });
-    let apiKey = await provider.getKey();
-    if (!apiKey) apiKey = await provider.promptKeySetup();
-    if (!apiKey) return withProvider({ success: false, errorState: "missing_key", message: `${provider.label} API key is required.` });
-
-    // Key setup may select a model. Read it afterwards, and initialize legacy
-    // or missing preferences even when credentials were already configured.
+    // A saved model identifies a cached fix before credentials or discovery
+    // are needed. Cache misses still require normal provider setup.
     let modelPreference = await provider.getModelPreference();
-    if (!AiModelPolicy.isSupported(provider.id, modelPreference) || modelPreference !== AiModelPolicy.normalizeId(provider.id, modelPreference)) {
-      const selection = await provider.testStoredConnection();
-      if (!selection.success) return withProvider(selection);
-      modelPreference = selection.model;
-    }
     modelPreference = AiModelPolicy.normalizeId(provider.id, modelPreference);
     // Keep existing Gemini cache entries compatible while namespacing all
     // additional providers to prevent cross-provider cache collisions.
-    const cachePreference = provider.id === "gemini" ? modelPreference : `${provider.id}:${modelPreference}`;
+    let cachePreference;
     const cache = getCacheModule();
     let signature = null;
 
-    if (cache) {
+    async function lookupCache() {
+      cachePreference = provider.id === "gemini" ? modelPreference : `${provider.id}:${modelPreference}`;
+      signature = null;
+      if (!cache || !modelPreference) return null;
       try {
         signature = await cache.createAiFixSignature(sanitizedData, cachePreference, promptVersion);
         if (!options.forceRefresh) {
@@ -553,17 +580,56 @@ Please generate structured JSON with:
         console.warn(`GeminiAI: Cache lookup failed; continuing with ${provider.label}.`, error);
         signature = null;
       }
+      return null;
+    }
+
+    let cachedResult = await lookupCache();
+    if (cachedResult) return cachedResult;
+    let apiKey = await provider.getKey();
+    if (!apiKey) {
+      apiKey = await provider.promptKeySetup();
+      if (!apiKey) return withProvider({ success: false, errorState: "missing_key", message: `${provider.label} API key is required.` });
+      const setupModel = AiModelPolicy.normalizeId(provider.id, await provider.getModelPreference());
+      if (setupModel !== modelPreference) {
+        modelPreference = setupModel;
+        cachedResult = await lookupCache();
+        if (cachedResult) return cachedResult;
+      }
+    }
+    if (provider.restoreModelCapabilities) await provider.restoreModelCapabilities(modelPreference);
+    if (!AiModelPolicy.isSupported(provider.id, modelPreference)) {
+      const selection = await provider.testStoredConnection();
+      if (!selection.success) return withProvider(selection);
+      if (modelPreference !== selection.model) {
+        modelPreference = selection.model;
+        cachedResult = await lookupCache();
+        if (cachedResult) return cachedResult;
+      }
     }
 
     const requestKey = signature || `${cachePreference}\n${JSON.stringify(sanitizedData)}`;
     if (inFlightRequests.has(requestKey)) {
       if (options.onBeforeRequest) options.onBeforeRequest();
-      return inFlightRequests.get(requestKey);
+      const active = inFlightRequests.get(requestKey);
+      if (options.onProgress) {
+        active.listeners.add(options.onProgress);
+        if (active.progress) {
+          try { options.onProgress(active.progress); } catch (error) { console.warn("Unable to display AI progress.", error); }
+        }
+      }
+      return active.promise;
     }
 
+    const active = { listeners: new Set(options.onProgress ? [options.onProgress] : []), progress: null, promise: null };
+    const onProgress = (progress) => {
+      active.progress = progress;
+      for (const listener of active.listeners) {
+        try { listener(progress); } catch (error) { console.warn("Unable to display AI progress.", error); }
+      }
+    };
     const request = (async () => {
       if (options.onBeforeRequest) options.onBeforeRequest();
-      const result = await provider.callApi(sanitizedData, apiKey, modelPreference);
+      const result = await provider.callApi(sanitizedData, apiKey, modelPreference, { onProgress });
       if (result.success) {
         const generatedAt = Date.now();
         const providerResult = { ...result, provider: provider.id, providerLabel: provider.label };
@@ -579,26 +645,37 @@ Please generate structured JSON with:
       return { ...result, provider: provider.id, providerLabel: provider.label };
     })();
 
-    inFlightRequests.set(requestKey, request);
+    active.promise = request;
+    inFlightRequests.set(requestKey, active);
     try {
       return await request;
     } finally {
-      if (inFlightRequests.get(requestKey) === request) inFlightRequests.delete(requestKey);
+      if (inFlightRequests.get(requestKey) === active) inFlightRequests.delete(requestKey);
     }
   }
 
   async function analyzeAndRender(rawContext, sanitizedData, options = {}) {
+    const analysis = {};
+    if (options.container) embeddedAnalyses.set(options.container, analysis);
+    else latestAnalysis = analysis;
+    const isCurrent = () => options.container ? embeddedAnalyses.get(options.container) === analysis : latestAnalysis === analysis;
+    const loadingContainer = showAnalysisLoading(options.container);
     const result = await getAiFix(rawContext, {
       forceRefresh: options.forceRefresh === true,
       sanitizedData,
-      onBeforeRequest: showAnalysisLoading
+      onProgress: (progress) => {
+        if (isCurrent()) renderAnalysisProgress(loadingContainer, progress);
+      }
     });
+    if (!isCurrent()) return;
 
     if (result.errorState === "missing_key") {
+      loadingContainer.textContent = result.message;
       showToast(result.message || "An AI provider API key is required.", "Key Missing", "warning");
       return;
     }
     if (result.errorState === "missing_model") {
+      loadingContainer.textContent = result.message;
       showToast(result.message, "Model Required", "warning");
       return;
     }
@@ -614,7 +691,7 @@ Please generate structured JSON with:
   }
 
   /**
-   * Renders the recommendation results or error states in the big popup modal
+   * Renders into the supplied tab panel, or opens a popup for standalone callers.
    */
   function renderRecommendationResult(result, rawContext, sanitizedData, options = {}) {
     const container = document.createElement("div");
@@ -646,31 +723,28 @@ Please generate structured JSON with:
           <p>${htmlEscape(result.message)}</p>
         </div>
         <div class="ui horizontal divider">Actions</div>
-        <button id="cpiHelper_updateAiKeyBtn" class="ui primary button"><i class="key icon"></i> Update ${htmlEscape(providerLabel)} API Key</button>
-        <button id="cpiHelper_retryAiBtn" class="ui positive button"><i class="redo icon"></i> Retry</button>
+        <button data-ai-action="update-key" class="ui primary button"><i class="key icon"></i> Update ${htmlEscape(providerLabel)} API Key</button>
+        <button data-ai-action="retry" class="ui positive button"><i class="redo icon"></i> Retry</button>
       `;
 
-      showBigPopup(container, "Fix with AI - Error", { fullscreen: false, closeText: "Close" });
+      if (options.container) options.container.replaceChildren(container);
+      else showBigPopup(container, "Fix with AI - Error", { fullscreen: false, closeText: "Close" });
 
-      setTimeout(() => {
-        const updateKeyBtn = document.getElementById("cpiHelper_updateAiKeyBtn");
-        const retryBtn = document.getElementById("cpiHelper_retryAiBtn");
+      const updateKeyBtn = container.querySelector('[data-ai-action="update-key"]');
+      const retryBtn = container.querySelector('[data-ai-action="retry"]');
 
-        if (updateKeyBtn) {
-          updateKeyBtn.onclick = async () => {
-            const provider = await getActiveProvider();
-            const newKey = provider.error ? "" : await provider.promptKeySetup();
-            if (newKey) {
-              handleGetRecommendation(rawContext);
-            }
-          };
-        }
-        if (retryBtn) {
-          retryBtn.onclick = () => {
-            handleGetRecommendation(rawContext, { forceRefresh: options.forceRefresh === true });
-          };
-        }
-      }, 100);
+      if (updateKeyBtn) {
+        updateKeyBtn.onclick = async () => {
+          const provider = await getActiveProvider();
+          const newKey = provider.error ? "" : await provider.promptKeySetup();
+          if (newKey) {
+            return handleGetRecommendation(rawContext, options);
+          }
+        };
+      }
+      if (retryBtn) {
+        retryBtn.onclick = () => handleGetRecommendation(rawContext, { ...options, forceRefresh: options.forceRefresh === true });
+      }
       return;
     }
 
@@ -734,24 +808,21 @@ Please generate structured JSON with:
 
       <div class="ui hidden divider"></div>
       <div style="text-align: right;">
-        <button id="cpiHelper_reanalyzeGeminiBtn" class="ui compact button"><i class="sync icon"></i> Regenerate with AI</button>
+        <button data-ai-action="regenerate" class="ui compact button"><i class="sync icon"></i> Regenerate with AI</button>
       </div>
     `;
 
-    showBigPopup(container, "Fix with AI", {
+    if (options.container) options.container.replaceChildren(container);
+    else showBigPopup(container, "Fix with AI", {
       fullscreen: false,
       large: true,
       closeText: "Close"
     });
 
-    setTimeout(() => {
-      const reanalyzeBtn = document.getElementById("cpiHelper_reanalyzeGeminiBtn");
-      if (reanalyzeBtn) {
-        reanalyzeBtn.onclick = () => {
-          handleGetRecommendation(rawContext, { forceRefresh: true });
-        };
-      }
-    }, 100);
+    const reanalyzeBtn = container.querySelector('[data-ai-action="regenerate"]');
+    if (reanalyzeBtn) {
+      reanalyzeBtn.onclick = () => handleGetRecommendation(rawContext, { ...options, forceRefresh: true });
+    }
   }
 
   function formatAge(timestamp) {

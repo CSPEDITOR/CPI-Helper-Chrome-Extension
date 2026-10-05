@@ -6,6 +6,9 @@
 var OpenRouterAI = (function () {
   const KEY_STORAGE_KEY = "openRouterApiKey";
   const MODEL_STORAGE_KEY = "openRouterModel";
+  const CAPABILITIES_STORAGE_KEY = "openRouterModelCapabilities";
+  const CAPABILITIES_TTL_MS = 24 * 60 * 60 * 1000;
+  let catalogDiscovered = false;
   const KEY_ENDPOINT = "https://openrouter.ai/api/v1/key";
   const MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models?output_modalities=text";
   const CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
@@ -108,17 +111,50 @@ var OpenRouterAI = (function () {
   async function saveModelPreference(model) {
     const value = AiModelPolicy.normalizeId("openrouter", model);
     if (!AiModelPolicy.isSupported("openrouter", value)) throw new Error("Unsupported OpenRouter model.");
-    return saveValues({ [MODEL_STORAGE_KEY]: value });
+    return saveValues(modelValues(value));
+  }
+
+  function modelValues(model) {
+    return {
+      [MODEL_STORAGE_KEY]: model,
+      [CAPABILITIES_STORAGE_KEY]: JSON.stringify({ model: AiModelPolicy.getOpenRouterModel(model), discoveredAt: Date.now() })
+    };
+  }
+
+  async function readModelCapabilities() {
+    const stored = await new Promise((resolve) => {
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        chrome.storage.local.get([CAPABILITIES_STORAGE_KEY], (result) => resolve(result[CAPABILITIES_STORAGE_KEY]));
+      } else resolve(localStorage.getItem(CAPABILITIES_STORAGE_KEY));
+    });
+    try {
+      return JSON.parse(stored || "null");
+    } catch (_) { return null; }
+  }
+
+  async function restoreModelCapabilities(model) {
+    if (catalogDiscovered) return;
+    const metadata = await readModelCapabilities();
+    const age = Date.now() - metadata?.discoveredAt;
+    if (metadata?.model?.id === model && age >= 0 && age < CAPABILITIES_TTL_MS) AiModelPolicy.restoreOpenRouterModel(metadata.model);
   }
 
   async function resolveModelSelection(models, candidateKey) {
     try {
-      return await AiModelPolicy.resolveSelection(
+      const selection = await AiModelPolicy.resolveSelection(
         "openrouter", models, getModelPreference,
         candidateKey === undefined ? saveModelPreference :
-          (model) => saveValues({ [MODEL_STORAGE_KEY]: model, [KEY_STORAGE_KEY]: candidateKey }),
+          (model) => saveValues({ ...modelValues(model), [KEY_STORAGE_KEY]: candidateKey }),
         candidateKey !== undefined
       );
+      if (selection.success) {
+        const metadata = await readModelCapabilities();
+        const age = Date.now() - metadata?.discoveredAt;
+        if (!(age >= 0 && age < CAPABILITIES_TTL_MS) || JSON.stringify(metadata?.model) !== JSON.stringify(AiModelPolicy.getOpenRouterModel(selection.model))) {
+          await saveValues(modelValues(selection.model));
+        }
+      }
+      return selection;
     } catch (error) {
       return connectionError(error?.message || "Unable to save the model selection.", "storage_error", candidateKey);
     }
@@ -183,6 +219,7 @@ var OpenRouterAI = (function () {
       }
 
       const models = AiModelPolicy.registerOpenRouterModels(data.data);
+      catalogDiscovered = true;
 
       return { success: true, message: "Connection successful.", models };
     } catch (error) {
@@ -224,11 +261,13 @@ var OpenRouterAI = (function () {
     return `
 You are an expert SAP Cloud Integration (CPI/CI) troubleshooting assistant.
 Analyze the following sanitized SAP CPI error details and provide actionable troubleshooting recommendations.
+Be concise: summary in one short sentence, at most three likely causes, three concrete recommended steps, and at most two essential warnings.
+Use one short sentence per array item. Put summary and recommendedSteps first so the fix can be displayed as it generates.
 
 ERROR CONTEXT:
 - Error Message: ${sanitizedData.errorMessage}
 - HTTP Status Code: ${sanitizedData.httpStatusCode || "N/A"}
-- Log Details / Stack Trace: ${sanitizedData.stackTraceOrLogDetails || "None provided"}
+- Log Details / Stack Trace: ${sanitizedData.stackTraceOrLogDetails === sanitizedData.errorMessage ? "Same as error message" : sanitizedData.stackTraceOrLogDetails || "None provided"}
 - CPI Integration Flow Name: ${sanitizedData.cpiContext.integrationFlowName || "N/A"}
 - CPI Artifact Type: ${sanitizedData.cpiContext.artifactType || "N/A"}
 - Adapter Type: ${sanitizedData.cpiContext.adapterType || "N/A"}
@@ -244,10 +283,10 @@ ${JSON.stringify(recommendationSchema(), null, 2)}`;
     return {
       type: "object",
       properties: {
-        summary: { type: "string" },
-        likelyCauses: { type: "array", items: { type: "string" } },
-        recommendedSteps: { type: "array", items: { type: "string" } },
-        warnings: { type: "array", items: { type: "string" } },
+        summary: { type: "string", description: "One short sentence explaining the error." },
+        recommendedSteps: { type: "array", description: "Three concrete actions, one short sentence each.", items: { type: "string" } },
+        likelyCauses: { type: "array", description: "At most three likely causes, one short sentence each.", items: { type: "string" } },
+        warnings: { type: "array", description: "At most two essential caveats; empty if none.", items: { type: "string" } },
         confidence: { type: "string", enum: ["low", "medium", "high"] }
       },
       required: ["summary", "likelyCauses", "recommendedSteps", "warnings", "confidence"],
@@ -278,6 +317,7 @@ ${JSON.stringify(recommendationSchema(), null, 2)}`;
       !Array.isArray(parsed.recommendedSteps) ||
       !Array.isArray(parsed.warnings) ||
       [parsed.likelyCauses, parsed.recommendedSteps, parsed.warnings].some((items) => !items.every((item) => typeof item === "string")) ||
+      parsed.likelyCauses.length > 3 || parsed.recommendedSteps.length > 3 || parsed.warnings.length > 2 ||
       !["low", "medium", "high"].includes(parsed.confidence)
     ) {
       throw new Error("OpenRouter returned JSON that does not match the recommendation format.");
@@ -285,16 +325,144 @@ ${JSON.stringify(recommendationSchema(), null, 2)}`;
     return parsed;
   }
 
-  async function callApi(sanitizedData, apiKey, resolvedModel) {
+  // Extract only complete top-level JSON values. Never repair or evaluate
+  // incomplete JSON, and never treat preliminary fields as a valid result.
+  function completedRecommendationFields(content) {
+    const text = content.trimStart().replace(/^```(?:json)?\s*/i, "");
+    const fields = {};
+    if (text[0] !== "{") return fields;
+    const tokenEnd = (start) => {
+      let inString = false;
+      let escaped = false;
+      let depth = 0;
+      for (let index = start; index < text.length; index++) {
+        const character = text[index];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === '"') {
+            inString = false;
+            if (depth === 0) return index + 1;
+          }
+        } else if (character === '"') inString = true;
+        else if (character === "[" || character === "{") depth++;
+        else if (character === "]" || character === "}") {
+          if (depth === 0) return index;
+          if (--depth === 0) return index + 1;
+        } else if (depth === 0 && character === ",") return index;
+      }
+      return -1;
+    };
+    let cursor = 1;
+    try {
+      while (cursor < text.length) {
+        while (/\s/.test(text[cursor] || "") && cursor < text.length) cursor++;
+        if (text[cursor] !== '"') break;
+        const keyEnd = tokenEnd(cursor);
+        if (keyEnd < 0) break;
+        const key = JSON.parse(text.slice(cursor, keyEnd));
+        cursor = keyEnd;
+        while (/\s/.test(text[cursor] || "") && cursor < text.length) cursor++;
+        if (text[cursor++] !== ":") break;
+        while (/\s/.test(text[cursor] || "") && cursor < text.length) cursor++;
+        const valueEnd = tokenEnd(cursor);
+        if (valueEnd < 0) break;
+        const value = JSON.parse(text.slice(cursor, valueEnd));
+        if (key === "summary" && typeof value === "string") fields.summary = value;
+        if (["likelyCauses", "recommendedSteps", "warnings"].includes(key) && Array.isArray(value) && value.every((item) => typeof item === "string")) {
+          fields[key] = value.slice(0, key === "warnings" ? 2 : 3);
+        }
+        cursor = valueEnd;
+        while (/\s/.test(text[cursor] || "") && cursor < text.length) cursor++;
+        if (text[cursor++] !== ",") break;
+      }
+    } catch (_) {
+      // Later fields may be malformed; final validation decides success.
+    }
+    return fields;
+  }
+
+  async function readStreamingContent(response, onProgress) {
+    // Some compatible endpoints return ordinary JSON despite stream=true.
+    if (!response.body?.getReader || response.headers?.get("content-type")?.includes("application/json")) {
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "OpenRouter generation failed.");
+      return data?.choices?.[0]?.message?.content;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventLines = [];
+    let content = "";
+    let complete = false;
+    let lastProgress = "";
+    const dispatch = () => {
+      const payload = eventLines.join("\n");
+      eventLines = [];
+      if (!payload) return;
+      if (payload === "[DONE]") { complete = true; return; }
+      const chunk = JSON.parse(payload);
+      if (chunk.error) throw new Error(chunk.error.message || "OpenRouter streaming failed.");
+      const choice = chunk.choices?.[0];
+      if (choice?.finish_reason === "error") throw new Error("OpenRouter streaming failed.");
+      if (["length", "content_filter"].includes(choice?.finish_reason)) throw new Error("OpenRouter could not complete the recommendation. Please retry.");
+      if (typeof choice?.delta?.content !== "string") return;
+      content += choice.delta.content;
+      const fields = completedRecommendationFields(content);
+      const progress = JSON.stringify(fields);
+      if (progress !== lastProgress) {
+        lastProgress = progress;
+        if (onProgress) onProgress(fields);
+      }
+    };
+    const line = (value) => {
+      if (value.endsWith("\r")) value = value.slice(0, -1);
+      if (!value) dispatch();
+      else if (value.startsWith("data:")) eventLines.push(value.slice(5).replace(/^ /, ""));
+    };
+    try {
+      while (!complete) {
+        const { done, value } = await reader.read();
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        let newline;
+        while (!complete && (newline = buffer.indexOf("\n")) >= 0) {
+          line(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+        }
+        if (done) {
+          if (buffer) line(buffer);
+          if (eventLines.length) dispatch();
+          break;
+        }
+      }
+      if (!complete) throw new Error("OpenRouter stream ended before completion. Please retry.");
+      return content;
+    } finally {
+      try { await reader.cancel(); } catch (_) { /* Connection may already be closed. */ }
+      reader.releaseLock();
+    }
+  }
+
+  async function callApi(sanitizedData, apiKey, resolvedModel, options = {}) {
     const model = AiModelPolicy.normalizeId("openrouter", resolvedModel === undefined ? await getModelPreference() : resolvedModel);
+    await restoreModelCapabilities(model);
     if (!AiModelPolicy.isSupported("openrouter", model)) {
       return connectionError("Select an available text model in CPI Helper AI Settings before generating a recommendation.", "missing_model");
     }
     const requestPayload = {
       model,
+      stream: true,
       max_tokens: MAX_OUTPUT_TOKENS,
       messages: [{ role: "user", content: buildPrompt(sanitizedData) }]
     };
+    if (AiModelPolicy.supportsStructuredOutput(model)) {
+      requestPayload.response_format = {
+        type: "json_schema",
+        json_schema: { name: "cpi_recommendation", strict: true, schema: recommendationSchema() }
+      };
+      // Catalog support can vary by endpoint; restrict routing accordingly.
+      requestPayload.provider = { require_parameters: true };
+    }
 
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -308,16 +476,18 @@ ${JSON.stringify(recommendationSchema(), null, 2)}`;
           },
           body: JSON.stringify(requestPayload)
         });
-        const data = await response.json();
         if (!response.ok) {
+          const data = await response.json();
           return connectionError(errorMessageFromResponse(data, response.status, response.statusText), errorStateForStatus(response.status), apiKey);
         }
+        const content = await readStreamingContent(response, options.onProgress);
 
         try {
-          const recommendation = parseRecommendation(data?.choices?.[0]?.message?.content);
+          const recommendation = parseRecommendation(content);
           return { success: true, data: recommendation, usedModel: model };
         } catch (error) {
           if (attempt === 1) return connectionError("The model did not return valid recommendation JSON after two attempts. Try another text model.", "invalid_response");
+          if (options.onProgress) options.onProgress({});
           requestPayload.messages.push({
             role: "user",
             content: "The previous response did not match the JSON schema. Return only the complete JSON object, with all required fields, string-only arrays, and no extra properties or surrounding text."
@@ -335,6 +505,7 @@ ${JSON.stringify(recommendationSchema(), null, 2)}`;
     getKeyStatus,
     removeKey,
     getModelPreference,
+    restoreModelCapabilities,
     saveModelPreference,
     resolveModelSelection,
     testConnection,
