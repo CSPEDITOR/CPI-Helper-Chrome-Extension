@@ -80,6 +80,7 @@
         "/plugins/iFlowSearcher.js",
         "/scripts/ai-fix-cache.js",
         "/scripts/ai-model-policy.js",
+        "/scripts/ai-error-context.js",
         "/scripts/openrouter-ai.js",
         "/scripts/gemini-ai.js",
         "/scripts/ui.js",

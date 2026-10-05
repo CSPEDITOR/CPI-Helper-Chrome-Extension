@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const read = (file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8");
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const recommendation = { summary: "Fix", likelyCauses: ["Cause"], recommendedSteps: ["Step"], warnings: [], confidence: "high" };
+const recommendation = { summary: "Fix", likelyCauses: ["Cause"], recommendedSteps: ["Step"], warnings: [], confidence: "high", evidence: ["Error details"], missingContext: [], verificationSteps: ["Retest"] };
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => data });
 const geminiModel = (id) => ({ name: `models/${id}`, supportedGenerationMethods: ["generateContent"] });
 const routerModel = (id) => ({ id, supported_parameters: ["response_format", "structured_outputs"], architecture: { output_modalities: ["text"] } });
@@ -25,6 +25,7 @@ function load(initial = {}, options = {}) {
     Map,
     Set,
     TextDecoder,
+    TextEncoder,
     chrome: {
       runtime,
       storage: {
@@ -63,7 +64,7 @@ function load(initial = {}, options = {}) {
     },
   };
   vm.createContext(context);
-  for (const file of ["ai-model-policy.js", "openrouter-ai.js", "gemini-ai.js"]) vm.runInContext(read(`scripts/${file}`), context);
+  for (const file of ["ai-model-policy.js", "ai-error-context.js", "openrouter-ai.js", "gemini-ai.js"]) vm.runInContext(read(`scripts/${file}`), context);
   return { context, stored, calls, writes };
 }
 
@@ -100,7 +101,7 @@ for (const provider of providers) {
     assert.equal(result.success, true);
     assert.deepEqual(
       plain(result.models).map((model) => model.id || model),
-      provider.id === "gemini" ? [provider.first, provider.second] : [provider.first, provider.second, "google/gemini-future", "openai/gpt-4.1-mini:free", "openai/gpt-unknown"]
+      provider.id === "gemini" ? [provider.first, provider.second] : ["openai/gpt-4.1-mini:free", provider.first, provider.second, "google/gemini-future", "openai/gpt-unknown"]
     );
     assert.equal(writes.length, 0, "candidate discovery must be read-only");
   });
@@ -413,6 +414,8 @@ test("shared policy loads before both adapters in popup and content scripts", ()
   for (const adapter of ["gemini-ai.js", "openrouter-ai.js"]) {
     assert.ok(scripts.indexOf("/scripts/ai-model-policy.js") < scripts.indexOf(`/scripts/${adapter}`));
     assert.ok(html.indexOf("/scripts/ai-model-policy.js") < html.indexOf(`/scripts/${adapter}`));
+    assert.ok(scripts.indexOf("/scripts/ai-error-context.js") >= 0 && scripts.indexOf("/scripts/ai-error-context.js") < scripts.indexOf(`/scripts/${adapter}`));
+    assert.ok(html.indexOf("/scripts/ai-error-context.js") >= 0 && html.indexOf("/scripts/ai-error-context.js") < html.indexOf(`/scripts/${adapter}`));
   }
 });
 
@@ -520,7 +523,7 @@ test("OpenRouter discovers other vendors without structured-output support and p
   assert.equal(stored.openRouterModel, model.id);
   const payload = JSON.parse(calls.find((call) => call.init?.method === "POST").init.body);
   assert.equal(payload.response_format, undefined);
-  assert.match(payload.messages[0].content, /"additionalProperties": false/);
+  assert.match(payload.messages[0].content, /"additionalProperties":false/);
   assert.match(payload.messages[0].content, /"required"/);
 });
 
@@ -633,7 +636,8 @@ test("a cached fix for an undiscovered saved model needs no network discovery", 
     async createAiFixSignature(data, model) { assert.equal(model, "openrouter:vendor/custom"); return model; },
     async getCachedAiFix() { return { response: { success: true, data: recommendation }, createdAt: 123 }; }
   };
-  const result = await context.GeminiAI.getAiFix({});
+  context.AiErrorContext.collect = () => assert.fail("cache hits must not perform source enrichment");
+  const result = await context.GeminiAI.getAiFix({}, { enrichContext: true });
   assert.equal(result.fromCache, true);
   assert.equal(result.generatedAt, 123);
   assert.equal(calls.length, 0);
@@ -702,6 +706,67 @@ test("expired model capabilities require discovery only after a cache miss", asy
   const reopened = load({ ...harness.stored, aiProvider: "openrouter", openRouterModelCapabilities: JSON.stringify(metadata) }, { routerModels: [routerModel("vendor/structured")] });
   assert.equal((await reopened.context.GeminiAI.getAiFix({})).success, true);
   assert.equal(reopened.calls.length, 3);
+});
+
+test("free models use one generation attempt and never fall back to a paid model", async () => {
+  const id = "vendor/model:free";
+  let generations = 0;
+  const harness = load({ openRouterModel: id }, {
+    fetch: async (url, init) => {
+      if (init?.method === "POST") { generations++; assert.equal(JSON.parse(init.body).model, id); return response({ choices: [{ message: { content: "invalid JSON" } }] }); }
+      return url.endsWith("/key") ? response({ data: {} }) : response({ data: [routerModel(id)] });
+    }
+  });
+  await harness.context.OpenRouterAI.testConnection("key");
+  const result = await harness.context.OpenRouterAI.callApi(harness.context.GeminiAI.sanitizeErrorData({}), "key");
+  assert.equal(result.errorState, "invalid_response");
+  assert.equal(generations, 1);
+});
+
+test("model context limits bound the full request including schema and output headroom", async () => {
+  const id = "vendor/small:free";
+  const harness = load({ openRouterModel: id }, { routerModels: [{ ...routerModel(id), context_length: 8192, top_provider: { max_completion_tokens: 1024 } }] });
+  await harness.context.OpenRouterAI.testConnection("key");
+  const data = harness.context.GeminiAI.sanitizeErrorData({ errorMessage: "HTTP " + "界".repeat(20000), stackTrace: "界".repeat(20000), properties: { CamelHttpResponseCode: 503 } });
+  assert.equal((await harness.context.OpenRouterAI.callApi(data, "key")).success, true);
+  const payload = JSON.parse(harness.calls.at(-1).init.body);
+  const promptBytes = new TextEncoder().encode(payload.messages[0].content).length;
+  const schemaBytes = new TextEncoder().encode(JSON.stringify(payload.response_format.json_schema.schema)).length;
+  assert.ok(promptBytes + schemaBytes + payload.max_tokens + 512 <= 8192);
+  assert.equal(payload.max_tokens, 1024);
+});
+
+test("an insufficient model context limit fails locally without spending a request", async () => {
+  const id = "vendor/tiny:free";
+  const harness = load({ openRouterModel: id }, { routerModels: [{ ...routerModel(id), context_length: 1024 }] });
+  await harness.context.OpenRouterAI.testConnection("key");
+  assert.equal((await harness.context.OpenRouterAI.callApi(harness.context.GeminiAI.sanitizeErrorData({}), "key")).errorState, "context_limit");
+  assert.equal(harness.calls.some((call) => call.init?.method === "POST"), false);
+});
+
+test("a 4096-token free model can accept bounded diagnostic context", async () => {
+  const harness = load({ openRouterModel: "vendor/compact:free" }, { routerModels: [{ ...routerModel("vendor/compact:free"), context_length: 4096 }] });
+  await harness.context.OpenRouterAI.testConnection("key");
+  const result = await harness.context.OpenRouterAI.callApi(harness.context.GeminiAI.sanitizeErrorData({ errorMessage: "Groovy script failed " + "x".repeat(10000) }), "key");
+  assert.equal(result.success, true);
+  const payload = JSON.parse(harness.calls.at(-1).init.body);
+  assert.ok(new TextEncoder().encode(payload.messages[0].content).length + new TextEncoder().encode(JSON.stringify(payload.response_format.json_schema.schema)).length + payload.max_tokens + 512 <= 4096);
+});
+
+test("first OpenRouter selection prefers free catalog entries and preserves a manual paid selection", async () => {
+  const options = { routerModels: [routerModel("openai/gpt-4.1-mini"), routerModel("vendor/text:free")] };
+  const first = load({ openRouterApiKey: "key" }, options);
+  assert.equal((await first.context.OpenRouterAI.testStoredConnection()).model, "vendor/text:free");
+  const manual = load({ openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, options);
+  assert.equal((await manual.context.OpenRouterAI.testStoredConnection()).model, "openai/gpt-4.1-mini");
+});
+
+test("an unavailable free selection cannot silently resolve to a paid model", async () => {
+  const harness = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "retired/model:free" }, { routerModels: [routerModel("openai/gpt-4.1-mini")] });
+  const result = await harness.context.GeminiAI.getAiFix({});
+  assert.equal(result.errorState, "no_free_models");
+  assert.equal(harness.stored.openRouterModel, "retired/model:free");
+  assert.equal(harness.calls.some((call) => call.init?.method === "POST"), false);
 });
 
 test("force refresh bypasses a cached recommendation", async () => {
@@ -873,8 +938,10 @@ test("trace Error button selects Fix with AI and retains the trace tabs on regen
   context.htmlEscape = (text) => String(text);
   context.cpiData = { integrationFlowId: "Flow" };
   context.childCount = 17;
+  context.runId = "run";
+  context.traceEvidence = new Map([["run:17", { headers: { CamelHttpResponseCode: "503" } }]]);
   context.n = 0;
-  context.targetElements = [{ Error: "Script failed" }];
+  context.targetElements = [{ Error: "Script failed", RunId: "run", ChildCount: 17 }];
   context.objects = ["Properties", "Headers", "Body", "Log", "Info"].map((label, index) => ({ label, content: `${label} content`, active: index === 0 }));
   const trace = read("scripts/inline-trace.js");
   const start = trace.indexOf("            if (targetElements[n].Error) {");
@@ -884,6 +951,8 @@ test("trace Error button selects Fix with AI and retains the trace tabs on regen
   const tabs = await context.createTabHTML(context.objects, "tracetab-17");
   const properties = tabs.children[2];
   const errorButton = context.objects[5].content.children[1];
+  context.runId = "different-run";
+  context.childCount = 99;
   errorButton.onclick();
   await settle();
   assert.equal(elements.get("tab-tracetab-17-6").checked, true);
@@ -892,6 +961,7 @@ test("trace Error button selects Fix with AI and retains the trace tabs on regen
   const panel = elements.get("tracetab-17-6-content").children[0];
   assert.match(panel.children[0].innerHTML, /Recommended Steps/);
   assert.equal(calls.length, 1);
+  assert.match(JSON.parse(calls[0].init.body).messages[0].content, /"httpStatusCode":503/);
   await panel.children[0].querySelector('[data-ai-action="regenerate"]').onclick();
   assert.match(panel.children[0].innerHTML, /Recommended Steps/);
   assert.equal(calls.length, 2);

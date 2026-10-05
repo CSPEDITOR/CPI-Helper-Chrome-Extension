@@ -16,6 +16,7 @@ async function clickTrace(e) {
   }
   inlineTraceRunning = true;
   showWaitingPopup();
+  const traceEvidence = new Map();
 
   var formatLogContent = function (inputList) {
     inputList = inputList.sort(function (a, b) {
@@ -96,18 +97,24 @@ async function clickTrace(e) {
       //   throw new Error("no trace found");
     }
     var traceId = trace.TraceId;
+    const evidenceKey = object.runId + ":" + object.childCount;
+    const evidence = traceEvidence.get(evidenceKey) || {};
+    traceEvidence.set(evidenceKey, evidence);
     let html = "";
     if (object.traceType == "properties") {
       let elements = JSON.parse(await makeCallPromise("GET", "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/TraceMessages(" + traceId + ")/ExchangeProperties?$format=json", true)).d.results;
+      evidence.properties = elements;
       html = formatHeadersAndPropertiesToTable(elements);
     }
     if (object.traceType == "headers") {
       let elements = JSON.parse(await makeCallPromise("GET", "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/TraceMessages(" + traceId + ")/Properties?$format=json", true)).d.results;
+      evidence.headers = elements;
       html = formatHeadersAndPropertiesToTable(elements);
     }
 
     if (object.traceType == "trace") {
       let elements = await makeCallPromise("GET", "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/TraceMessages(" + traceId + ")/$value", true);
+      evidence.payload = elements;
       html = formatTrace(elements, object.runId + "_" + object.childCount, traceId);
     }
 
@@ -119,6 +126,7 @@ async function clickTrace(e) {
           true
         )
       ).d.RunStepProperties.results;
+      evidence.logProperties = elements;
       html = formatLogContent(elements);
     }
 
@@ -130,6 +138,7 @@ async function clickTrace(e) {
           true
         )
       ).d;
+      evidence.logProperties = elements.RunStepProperties?.results;
       html = formatInfoContent(elements);
     }
 
@@ -221,11 +230,18 @@ async function clickTrace(e) {
             ];
             if (targetElements[n].Error) {
               const errText = targetElements[n].Error;
+              const aiEvidenceKey = targetElements[n].RunId + ":" + targetElements[n].ChildCount;
               const adapterType = targetElements[n].AdapterType || null;
               const aiContext = {
                 errorMessage: errText,
                 stackTrace: errText,
                 adapterType: adapterType,
+                messageGuid: typeof messageguid !== "undefined" ? messageguid : null,
+                step: targetElements[n],
+                status: typeof logleveldata !== "undefined" ? logleveldata.Status : null,
+                customStatus: typeof logleveldata !== "undefined" ? logleveldata.CustomStatus : null,
+                contextNote: "Trace properties and body describe the snapshot before this step, not the receiver response.",
+                nearbySteps: typeof inlineTraceElements !== "undefined" ? inlineTraceElements.filter((item) => item.RunId === runId && item.ChildCount < childCount).sort((a, b) => b.ChildCount - a.ChildCount).slice(0, 2) : [],
                 integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null,
               };
               const aiPanel = document.createElement("div");
@@ -259,7 +275,7 @@ async function clickTrace(e) {
                 label: "Fix with AI",
                 content: async () => {
                   if (typeof GeminiAI !== "undefined") {
-                    GeminiAI.handleGetRecommendation(aiContext, { container: aiPanel });
+                    GeminiAI.handleGetRecommendation({ ...aiContext, ...traceEvidence.get(aiEvidenceKey) }, { container: aiPanel });
                   } else {
                     aiPanel.textContent = "The AI module is unavailable. Reload the extension and try again.";
                   }
@@ -351,6 +367,9 @@ async function createInlineTraceElements(MessageGuid, checked) {
         RunId: run.RunId,
         BranchId: run.BranchId,
         Error: run.Error,
+        AdapterType: run.AdapterType,
+        StepType: run.StepType,
+        StepName: run.StepName,
       });
     });
     // res is dataXHR request....

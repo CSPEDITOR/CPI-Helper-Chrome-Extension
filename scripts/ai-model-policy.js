@@ -39,6 +39,9 @@ var AiModelPolicy = (function () {
         name: preferred?.name || (typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : id),
         group: vendorGroup(id),
         supportedParameters: Array.isArray(entry.supported_parameters) ? entry.supported_parameters.filter((parameter) => typeof parameter === "string") : [],
+        contextLength: Number.isInteger(entry.context_length) && entry.context_length > 0 ? entry.context_length : null,
+        maxCompletionTokens: Number.isInteger(entry.top_provider?.max_completion_tokens) && entry.top_provider.max_completion_tokens > 0 ? entry.top_provider.max_completion_tokens : null,
+        isFree: id.endsWith(":free") || id === "openrouter/free" || (String(entry.pricing?.prompt ?? "").trim() !== "" && String(entry.pricing?.completion ?? "").trim() !== "" && Number(entry.pricing.prompt) === 0 && Number(entry.pricing.completion) === 0),
       };
       const existing = catalog.get(id);
       if (!existing || model.name < existing.name) catalog.set(id, model);
@@ -72,7 +75,10 @@ var AiModelPolicy = (function () {
   function restoreOpenRouterModel(model) {
     const id = normalizeId("openrouter", model?.id);
     if (!id || !Array.isArray(model.supportedParameters)) return;
-    routerCatalog.set(id, { id, name: typeof model.name === "string" ? model.name : id, group: vendorGroup(id), supportedParameters: model.supportedParameters.filter((parameter) => typeof parameter === "string") });
+    routerCatalog.set(id, { id, name: typeof model.name === "string" ? model.name : id, group: vendorGroup(id), supportedParameters: model.supportedParameters.filter((parameter) => typeof parameter === "string"),
+      contextLength: Number.isInteger(model.contextLength) && model.contextLength > 0 ? model.contextLength : null,
+      maxCompletionTokens: Number.isInteger(model.maxCompletionTokens) && model.maxCompletionTokens > 0 ? model.maxCompletionTokens : null,
+      isFree: model.isFree === true || id.endsWith(":free") || id === "openrouter/free" });
   }
 
   function filterModels(provider, discovered) {
@@ -84,19 +90,23 @@ var AiModelPolicy = (function () {
     };
     return catalog
       .filter((model) => available.has(model.id))
-      .sort((left, right) => priority(left.id) - priority(right.id) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+      .sort((left, right) => (provider === "openrouter" && left.isFree !== right.isFree ? (left.isFree ? -1 : 1) : 0) || priority(left.id) - priority(right.id) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
       .map((model) => ({ ...model }));
   }
 
   // Only call with a complete, successful discovery. An empty catalog is not
   // permission to erase a preference: it may become available again later.
   async function resolveSelection(provider, discovered, getPreference, savePreference, forceSave = false) {
-    const models = filterModels(provider, discovered);
+    let models = filterModels(provider, discovered);
     if (!models.length) {
       return { success: false, errorState: "no_supported_models", message: "No supported models are available for this provider.", models, model: "" };
     }
     const saved = await getPreference();
     const normalized = normalizeId(provider, saved);
+    if (provider === "openrouter" && (normalized.endsWith(":free") || normalized === "openrouter/free") && !models.some((entry) => entry.id === normalized)) {
+      models = models.filter((entry) => entry.isFree);
+      if (!models.length) return { success: false, errorState: "no_free_models", message: "The selected free model is unavailable and no free replacement was discovered. Select an available free model in AI Settings.", models, model: "" };
+    }
     const model = models.some((entry) => entry.id === normalized) ? normalized : models[0].id;
     if (forceSave || saved !== model) await savePreference(model);
     return { success: true, models, model };

@@ -1505,6 +1505,9 @@ async function errorPopupOpen(MessageGuid) {
     duration: formatDuration(stepStop - stepStart),
     errors: errorDetails,
     property: propertyArray,
+    diagnosticProperties: customHeaders?.CustomHeaderProperties?.results || [],
+    step: resp?.find((step) => step.Error),
+    rawErrors: (resp || []).filter((step) => step.Error).map((step) => step.Error),
   };
 }
 async function popupTable(message, onErrorData) {
@@ -1578,10 +1581,14 @@ function apireserror(message) {
                   const errData = errorData;
                   if (typeof GeminiAI !== "undefined") {
                     GeminiAI.handleGetRecommendation({
-                      errorMessage: errData.errors.join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,
+                      errorMessage: (errData.rawErrors || errData.errors).join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,
                       status: errData.status,
                       customStatus: errData.customstatus,
-                      stackTrace: errData.errors.join("\n"),
+                        stackTrace: (errData.rawErrors || errData.errors).join("\n"),
+                      step: errData.step,
+                      adapterType: errData.step?.AdapterType,
+                      properties: errData.diagnosticProperties,
+                      messageGuid: message,
                       integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
                     });
                   } else {

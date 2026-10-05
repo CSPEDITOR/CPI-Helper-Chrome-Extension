@@ -104,14 +104,14 @@ var AiFixCache = (function () {
       .trim();
   }
 
-  function normalizeValue(value) {
-    if (typeof value === "string") return normalizeText(value);
-    if (Array.isArray(value)) return value.map(normalizeValue);
+  function normalizeValue(value, preserveText = false) {
+    if (typeof value === "string") return preserveText ? value : normalizeText(value);
+    if (Array.isArray(value)) return value.map((item) => normalizeValue(item, preserveText));
     if (isPlainObject(value)) {
       return Object.keys(value)
         .sort()
         .reduce((normalized, key) => {
-          normalized[key] = normalizeValue(value[key]);
+          normalized[key] = normalizeValue(value[key], preserveText || ["diagnostics", "deployedVersion", "deployedOn"].includes(key));
           return normalized;
         }, {});
     }
@@ -119,6 +119,8 @@ var AiFixCache = (function () {
   }
 
   function normalizeError(errorData) {
+    // Source literals, observed versions and selected values are evidence,
+    // not volatile log IDs. Preserve them exactly in the cache identity.
     return JSON.stringify(normalizeValue(errorData || {}));
   }
 
@@ -141,6 +143,7 @@ var AiFixCache = (function () {
       Array.isArray(data.likelyCauses) &&
       Array.isArray(data.recommendedSteps) &&
       Array.isArray(data.warnings) &&
+      [data.evidence, data.missingContext, data.verificationSteps].every((items) => Array.isArray(items) && items.length <= 2 && items.every((item) => typeof item === "string")) &&
       ["low", "medium", "high"].includes(data.confidence)
     );
   }
