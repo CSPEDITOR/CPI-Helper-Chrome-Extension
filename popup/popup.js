@@ -534,7 +534,7 @@ function addTenantSettings() {
       models.forEach((model) => {
         const normalizedModel = typeof model === "string" ? { id: model, name: model, group: "" } : model;
         if (!normalizedModel || !normalizedModel.id) return;
-        const group = normalizedModel.group || "";
+        const group = config.provider === "openrouter" && normalizedModel.isFree ? "Free models" : normalizedModel.group || "";
         if (!groupedOptions.has(group)) groupedOptions.set(group, []);
         groupedOptions.get(group).push(normalizedModel);
       });

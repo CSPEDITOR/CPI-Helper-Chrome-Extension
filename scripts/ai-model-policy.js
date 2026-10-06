@@ -25,6 +25,34 @@ var AiModelPolicy = (function () {
   }
 
   let routerCatalog = new Map(policies.openrouter.map((model) => [model.id, { ...model, group: vendorGroup(model.id) }]));
+  let geminiCatalog = new Map(policies.gemini.map((model) => [model.id, { ...model, nativeSchema: true }]));
+
+  function registerGeminiModels(discovered) {
+    const catalog = new Map();
+    for (const entry of discovered) {
+      const id = normalizeId("gemini", entry?.name);
+      if (!/^(gemini|gemma)-[a-zA-Z0-9._-]+$/.test(id) ||
+        !Array.isArray(entry?.supportedGenerationMethods) || !entry.supportedGenerationMethods.includes("generateContent")) continue;
+      // models.list does not consistently advertise modalities. Specialized
+      // media endpoints cannot produce this text diagnostic response.
+      if (/(?:^|-)(?:image|audio|tts|native-audio|live|robotics|computer-use)(?:-|$)/i.test(id)) continue;
+      if (Array.isArray(entry.supportedOutputTypes) && !entry.supportedOutputTypes.includes("text")) continue;
+      const preferred = policies.gemini.find((model) => model.id === id);
+      const model = {
+        id,
+        name: preferred?.name || (typeof entry.displayName === "string" && entry.displayName.trim() ? entry.displayName.trim() : id),
+        nativeSchema: /^gemini-(?:2\.5|3(?:\.\d+)?)-(?:flash|pro)(?:-|$)/.test(id),
+      };
+      const existing = catalog.get(id);
+      if (!existing || model.name < existing.name) catalog.set(id, model);
+    }
+    geminiCatalog = catalog;
+    return filterModels("gemini", Array.from(catalog.values()));
+  }
+
+  function geminiSupportsStructuredOutput(value) {
+    return geminiCatalog.get(normalizeId("gemini", value))?.nativeSchema === true;
+  }
 
   function registerOpenRouterModels(discovered) {
     const catalog = new Map();
@@ -59,7 +87,7 @@ var AiModelPolicy = (function () {
 
   function isSupported(provider, value) {
     const id = normalizeId(provider, value);
-    return provider === "openrouter" ? routerCatalog.has(id) : (policies[provider] || []).some((model) => model.id === id);
+    return provider === "openrouter" ? routerCatalog.has(id) : provider === "gemini" ? geminiCatalog.has(id) : false;
   }
 
   function supportsStructuredOutput(value) {
@@ -83,7 +111,7 @@ var AiModelPolicy = (function () {
 
   function filterModels(provider, discovered) {
     const available = new Set((discovered || []).map((model) => normalizeId(provider, typeof model === "string" ? model : model?.id)));
-    const catalog = provider === "openrouter" ? Array.from(routerCatalog.values()) : policies[provider] || [];
+    const catalog = provider === "openrouter" ? Array.from(routerCatalog.values()) : provider === "gemini" ? Array.from(geminiCatalog.values()) : [];
     const priority = (id) => {
       const index = (policies[provider] || []).findIndex((model) => model.id === id);
       return index < 0 ? Infinity : index;
@@ -112,5 +140,5 @@ var AiModelPolicy = (function () {
     return { success: true, models, model };
   }
 
-  return { normalizeId, isSupported, supportsStructuredOutput, getOpenRouterModel, restoreOpenRouterModel, filterModels, registerOpenRouterModels, resolveSelection };
+  return { normalizeId, isSupported, supportsStructuredOutput, geminiSupportsStructuredOutput, getOpenRouterModel, restoreOpenRouterModel, filterModels, registerGeminiModels, registerOpenRouterModels, resolveSelection };
 })();

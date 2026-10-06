@@ -240,14 +240,12 @@ var GeminiAI = (function () {
         if (!data || !Array.isArray(data.models) || (data.nextPageToken != null && typeof data.nextPageToken !== "string")) {
           return connectionError("Gemini returned an unexpected model discovery response.");
         }
-        discovered.push(...data.models
-          .filter((model) => Array.isArray(model?.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
-          .map((model) => model.name));
+        discovered.push(...data.models);
         pageToken = data.nextPageToken || "";
         if (pageToken && seenTokens.has(pageToken)) return connectionError("Gemini model discovery returned a repeated page token.");
         seenTokens.add(pageToken);
       } while (pageToken);
-      const models = AiModelPolicy.filterModels("gemini", discovered).map((model) => model.id);
+      const models = AiModelPolicy.registerGeminiModels(discovered).map((model) => model.id);
 
       return { success: true, message: "Connection successful.", models };
     } catch (error) {
@@ -385,6 +383,12 @@ Please generate structured JSON with:
       }
     };
 
+    if (!AiModelPolicy.geminiSupportsStructuredOutput(userModelPref)) {
+      delete requestPayload.generationConfig.responseMimeType;
+      delete requestPayload.generationConfig.responseSchema;
+      requestPayload.contents[0].parts[0].text += "\nReturn only one JSON object with all the fields above, without Markdown or additional text.";
+    }
+
     let lastErrorResult = null;
 
     for (const modelId of candidateModels) {
@@ -431,12 +435,12 @@ Please generate structured JSON with:
           };
         }
 
-        const textContent = responseData?.candidates?.[0]?.content?.parts?.[0]?.text;
+        const textContent = responseData?.candidates?.[0]?.content?.parts?.filter((part) => typeof part.text === "string" && !part.thought).map((part) => part.text).join("");
         if (!textContent) {
           return { errorState: "api_error", message: "Received empty response content from Gemini API." };
         }
 
-        const parsedJSON = JSON.parse(textContent);
+        const parsedJSON = JSON.parse(textContent.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
         if (typeof parsedJSON?.summary !== "string" || !["low", "medium", "high"].includes(parsedJSON.confidence) ||
           ["likelyCauses", "recommendedSteps", "warnings", "evidence", "missingContext", "verificationSteps"].some((field) => !Array.isArray(parsedJSON[field]) || parsedJSON[field].length > (["likelyCauses", "recommendedSteps"].includes(field) ? 3 : 2) || !parsedJSON[field].every((item) => typeof item === "string"))) {
           return { success: false, errorState: "invalid_response", message: "The model did not return valid diagnostic recommendations." };

@@ -18,6 +18,38 @@ async function clickTrace(e) {
   showWaitingPopup();
   const traceEvidence = new Map();
 
+  async function collectClipboardTraceEvidence(context) {
+    const { RunId, ChildCount } = context.step;
+    const evidence = { ...traceEvidence.get(RunId + ":" + ChildCount) };
+    const missing = [];
+    const base = "/" + cpiData.urlExtension + cpiData.runtimePathExtension + "odata/api/v1/";
+    const requests = [["logProperties", `MessageProcessingLogRunSteps(RunId='${RunId}',ChildCount=${ChildCount})/?$expand=RunStepProperties&$format=json`]];
+    try {
+      const traces = JSON.parse(await makeCallPromise("GET", base + `MessageProcessingLogRunSteps(RunId='${RunId}',ChildCount=${ChildCount})/TraceMessages?$format=json`, true)).d.results;
+      const trace = traces.sort((a, b) => a.TraceId - b.TraceId)[0];
+      if (trace) {
+        requests.push(
+          ["properties", `TraceMessages(${trace.TraceId})/ExchangeProperties?$format=json`],
+          ["headers", `TraceMessages(${trace.TraceId})/Properties?$format=json`],
+          ["payload", `TraceMessages(${trace.TraceId})/$value`]
+        );
+      } else missing.push("Trace snapshot unavailable or expired");
+    } catch (error) {
+      missing.push("Trace lookup failed; trace fields include only previously loaded evidence");
+    }
+    const pending = requests.filter(([field]) => evidence[field] === undefined);
+    const results = await Promise.allSettled(pending.map(async ([field, endpoint]) => {
+      const response = await makeCallPromise("GET", base + endpoint, true);
+      return field === "payload" ? response : field === "logProperties" ? JSON.parse(response).d.RunStepProperties.results : JSON.parse(response).d.results;
+    }));
+    results.forEach((result, i) => {
+      const field = pending[i][0];
+      if (result.status === "fulfilled") evidence[field] = result.value;
+      else missing.push(`${field} lookup failed`);
+    });
+    return { ...context, ...evidence, contextNote: [context.contextNote, ...missing].filter(Boolean).join(" ") };
+  }
+
   var formatLogContent = function (inputList) {
     inputList = inputList.sort(function (a, b) {
       return a.Name.toLowerCase() > b.Name.toLowerCase() ? 1 : -1;
@@ -240,6 +272,8 @@ async function clickTrace(e) {
                 step: targetElements[n],
                 status: typeof logleveldata !== "undefined" ? logleveldata.Status : null,
                 customStatus: typeof logleveldata !== "undefined" ? logleveldata.CustomStatus : null,
+                logStart: typeof logleveldata !== "undefined" ? logleveldata.LogStart : null,
+                logEnd: typeof logleveldata !== "undefined" ? logleveldata.LogEnd : null,
                 contextNote: "Trace properties and body describe the snapshot before this step, not the receiver response.",
                 nearbySteps: typeof inlineTraceElements !== "undefined" ? inlineTraceElements.filter((item) => item.RunId === runId && item.ChildCount < childCount).sort((a, b) => b.ChildCount - a.ChildCount).slice(0, 2) : [],
                 integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null,
@@ -264,6 +298,17 @@ async function clickTrace(e) {
                 document.getElementById(aiTabId)?.click();
               };
               innerContent.appendChild(aiBtn);
+              const copyBtn = document.createElement("button");
+              copyBtn.type = "button";
+              copyBtn.className = "ui button mini cpiHelper_copyErrorContextBtn";
+              copyBtn.style.marginTop = "10px";
+              copyBtn.innerHTML = '<i class="copy icon"></i> Copy error context';
+              copyBtn.title = "Copy a structured troubleshooting report to paste into your chat";
+              copyBtn.onclick = (event) => {
+                event.stopPropagation();
+                copyErrorContext(() => collectClipboardTraceEvidence(aiContext), copyBtn);
+              };
+              innerContent.appendChild(copyBtn);
               innerContent.style.display = "block";
               objects.push({
                 label: "Error",

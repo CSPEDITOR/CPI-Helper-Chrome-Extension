@@ -13,6 +13,163 @@ function load(extra = {}) {
   return context;
 }
 
+function clipboardEvidence(report) {
+  return JSON.parse(report.split("```json\n")[1].split("\n```")[0]);
+}
+
+test("clipboard report preserves extensive evidence beyond the compact model request", () => {
+  const context = load();
+  const raw = {
+    errorMessage: "Groovy failure script.groovy:20 " + "evidence ".repeat(400),
+    messageGuid: "selected-message", status: "FAILED", logStart: "/Date(1000)/", duration: "123ms",
+    step: { ModelStepId: "step", RunId: "run", ChildCount: 3, AdapterType: "Groovy" },
+    scriptName: "script.groovy", scriptSource: Array.from({ length: 40 }, (_, i) => `def variable${i} = ${i}`).join("\n"),
+    configuration: { scriptFunction: { value: "processData" }, customOption: { value: "custom" } },
+    properties: { unrelatedButUseful: "available evidence", nested: { shape: "value" } },
+    headers: { "Content-Type": "application/json" },
+    failedSteps: [{ ModelStepId: "step", Error: "failure" }],
+    contextNote: "Snapshot before step; not a receiver response.",
+  };
+  const report = context.AiErrorContext.buildClipboardReport(raw);
+  const data = clipboardEvidence(report);
+  assert.equal(data.errorMessage, raw.errorMessage);
+  assert.equal(data.run.messageGuid, "selected-message");
+  assert.equal(data.diagnostics.step.RunId, "run");
+  assert.match(data.diagnostics.script.sourceWithLineNumbers, /40: def variable39/);
+  assert.match(data.diagnostics.script.version, /unverified/);
+  assert.equal(data.diagnostics.configuration.find((item) => item.name === "customOption").value.value, "custom");
+  assert.equal(data.diagnostics.properties[0].value, "available evidence");
+  assert.equal(data.diagnostics.failedSteps[0].ModelStepId, "step");
+  assert.match(report, /rank likely causes with supporting evidence/);
+  assert.ok(data.evidenceNotes.includes(raw.contextNote));
+});
+
+test("clipboard report redacts credentials in expanded and nested evidence", () => {
+  const report = load().AiErrorContext.buildClipboardReport({
+    errorMessage: "HTTP failure password=error-secret", scriptSource: 'def secret="script-secret"',
+    properties: [{ Name: "password", Value: "property-secret" }, { Name: "safe", Value: { password: "nested-secret", note: "Bearer token-secret" } }],
+    headers: { Authorization: "header-secret" },
+    configuration: { clientSecret: { value: "config-secret" }, url: { value: "https://user:url-secret@example.com/path?key=query-secret" } },
+    failedSteps: [{ RunStepProperties: { results: [{ Name: "accessToken", Value: "step-secret" }] } }],
+    payload: '{"name":"business-value","password":"payload-secret"}',
+  });
+  for (const secret of ["error-secret", "script-secret", "property-secret", "nested-secret", "token-secret", "header-secret", "config-secret", "url-secret", "query-secret", "step-secret", "business-value", "payload-secret"]) {
+    assert.equal(report.includes(secret), false, secret);
+  }
+  assert.match(clipboardEvidence(report).diagnostics.payloadStructure, /string/);
+});
+
+test("clipboard report marks unavailable and oversized evidence without invalid JSON", () => {
+  const report = load().AiErrorContext.buildClipboardReport({ errorMessage: "failure " + '"\\'.repeat(50000), properties: Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`value${i}`, "x".repeat(5000)])) });
+  const data = clipboardEvidence(report);
+  assert.match(data.errorMessage, /TRUNCATED/);
+  assert.ok(data.diagnostics.missing.includes("Message headers unavailable or not loaded"));
+  assert.ok(data.evidenceNotes.some((note) => /truncated/.test(note)));
+  assert.ok(data.evidenceNotes.some((note) => /first 100/.test(note)));
+});
+
+test("copy action writes structured evidence only and restores the button on success or failure", async () => {
+  for (const fails of [false, true]) {
+    const copied = [];
+    const toasts = [];
+    const context = load({
+      navigator: { clipboard: { writeText: async (text) => { if (fails) throw new Error("clipboard denied"); copied.push(text); } } },
+      showToast: (...args) => toasts.push(args),
+      window: { open: () => assert.fail("Must not open a window") },
+      fetch: () => assert.fail("Must not call a provider"),
+    });
+    const action = source("contentScript.js").split("async function copyErrorContext(")[1].split("async function popupTable(")[0];
+    vm.runInContext("async function copyErrorContext(" + action, context);
+    const button = { innerHTML: "Copy error context", disabled: false };
+    await context.copyErrorContext(async () => ({ errorMessage: "HTTP failure", messageGuid: "message" }), button);
+    assert.equal(button.disabled, false);
+    assert.equal(button.innerHTML, "Copy error context");
+    assert.equal(copied.length, fails ? 0 : 1);
+    if (!fails) assert.equal(clipboardEvidence(copied[0]).run.messageGuid, "message");
+    assert.match(toasts[0][0], fails ? /Unable to copy/ : /Error context copied/);
+  }
+});
+
+test("trace clipboard collection reads unopened evidence for the selected step and retains partial results", async () => {
+  const requests = [];
+  const context = load({
+    cpiData: { urlExtension: "itspaces/", runtimePathExtension: "" },
+    traceEvidence: new Map([["selected-run:3", { properties: [{ Name: "cached", Value: "evidence" }] }]]),
+    makeCallPromise: async (method, url) => {
+      requests.push(url);
+      assert.match(url, /selected-run|TraceMessages\(12\)/);
+      assert.equal(method, "GET");
+      if (url.includes("/TraceMessages?")) return JSON.stringify({ d: { results: [{ TraceId: 12 }, { TraceId: 18 }] } });
+      if (url.includes("/Properties?")) throw new Error("headers unavailable");
+      if (url.includes("/$value")) return '{"customer":{"id":42}}';
+      if (url.includes("$expand")) return JSON.stringify({ d: { RunStepProperties: { results: [{ Name: "exception", Value: "root cause" }] } } });
+      assert.fail("Loaded exchange properties should not be fetched again");
+    },
+  });
+  const trace = source("inline-trace.js");
+  vm.runInContext(trace.slice(trace.indexOf("  async function collectClipboardTraceEvidence("), trace.indexOf("  var formatLogContent")), context);
+  const raw = await context.collectClipboardTraceEvidence({ errorMessage: "failure", step: { RunId: "selected-run", ChildCount: 3 }, contextNote: "Before-step snapshot." });
+  assert.equal(requests.length, 4);
+  assert.equal(raw.properties[0].Name, "cached");
+  assert.equal(raw.logProperties[0].Value, "root cause");
+  assert.equal(raw.payload, '{"customer":{"id":42}}');
+  assert.match(raw.contextNote, /Before-step snapshot.*headers lookup failed/);
+  const data = clipboardEvidence(context.AiErrorContext.buildClipboardReport(raw));
+  assert.match(data.diagnostics.payloadStructure, /number/);
+});
+
+test("trace clipboard collection still obtains step logs when trace snapshots have expired", async () => {
+  const context = load({
+    cpiData: { urlExtension: "", runtimePathExtension: "" }, traceEvidence: new Map(),
+    makeCallPromise: async (method, url) => JSON.stringify(url.includes("/TraceMessages?") ? { d: { results: [] } } : { d: { RunStepProperties: { results: [{ Name: "exception", Value: "failure" }] } } }),
+  });
+  const trace = source("inline-trace.js");
+  vm.runInContext(trace.slice(trace.indexOf("  async function collectClipboardTraceEvidence("), trace.indexOf("  var formatLogContent")), context);
+  const raw = await context.collectClipboardTraceEvidence({ step: { RunId: "run", ChildCount: 3 } });
+  assert.equal(raw.logProperties[0].Value, "failure");
+  assert.match(raw.contextNote, /expired/);
+});
+
+test("sidebar error section places clipboard action alongside Fix with AI", async () => {
+  const context = load({
+    errorPopupOpen: async () => ({ status: "FAILED", customstatus: "", duration: "1ms", errors: ["error"], property: [] }),
+    log: { debug() {} }, getStatusColor: () => "red", getStatusIcon: () => "",
+  });
+  const script = source("contentScript.js");
+  vm.runInContext(script.slice(script.indexOf("async function popupTable("), script.indexOf("function apireserror(")), context);
+  const markup = await context.popupTable("selected-message");
+  assert.match(markup, /Fix with AI[\s\S]*cpiHelper_copyErrorContextBtn[\s\S]*Copy error context/);
+  assert.match(markup, /cpiHelper_copyErrorContextBtn[^>]*data-message-guid="selected-message"/);
+});
+
+test("trace Error copy button retains its selected step and does not select the AI tab", async () => {
+  let copied;
+  const context = load({
+    n: 0, childCount: 3, runId: "selected-run", objects: [], traceEvidence: new Map(),
+    targetElements: [{ Error: "failure", RunId: "selected-run", ChildCount: 3 }],
+    document: {
+      createElement: () => ({ style: {}, classList: { add() {} }, children: [], appendChild(child) { this.children.push(child); } }),
+      getElementById: () => assert.fail("Copy must not navigate to Fix with AI"),
+    },
+    collectClipboardTraceEvidence: async (raw) => raw,
+    copyErrorContext: async (supplier) => { copied = await supplier(); },
+  });
+  const trace = source("inline-trace.js");
+  const start = trace.indexOf("            if (targetElements[n].Error) {");
+  vm.runInContext(trace.slice(start, trace.indexOf("            let label =", start)), context);
+  const copyButton = context.objects[0].content.children[2];
+  assert.match(copyButton.innerHTML, /Copy error context/);
+  context.runId = "other-run";
+  context.childCount = 99;
+  let stopped = false;
+  copyButton.onclick({ stopPropagation() { stopped = true; } });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(stopped, true);
+  assert.equal(copied.step.RunId, "selected-run");
+  assert.equal(copied.step.ChildCount, 3);
+});
+
 test("context keeps HTTP, MPL status, artifact type and observed version separate", () => {
   const context = load({ cpiData: { integrationFlowId: "Flow", currentArtifactType: "IFlow", flowData: { artifactInformation: { name: "Human Name", version: "1.2" } } } });
   const data = context.AiErrorContext.build({ errorMessage: "HTTP call failed", status: "FAILED", customStatus: "Receiver unavailable", headers: { CamelHttpResponseCode: "503" }, step: { ModelStepId: "Step_1", StepName: "Receiver", AdapterType: "HTTP" } });

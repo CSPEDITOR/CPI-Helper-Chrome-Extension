@@ -101,7 +101,7 @@ for (const provider of providers) {
     assert.equal(result.success, true);
     assert.deepEqual(
       plain(result.models).map((model) => model.id || model),
-      provider.id === "gemini" ? [provider.first, provider.second] : ["openai/gpt-4.1-mini:free", provider.first, provider.second, "google/gemini-future", "openai/gpt-unknown"]
+      provider.id === "gemini" ? [provider.first, provider.second, "gemini-future"] : ["openai/gpt-4.1-mini:free", provider.first, provider.second, "google/gemini-future", "openai/gpt-unknown"]
     );
     assert.equal(writes.length, 0, "candidate discovery must be read-only");
   });
@@ -475,6 +475,55 @@ for (const provider of providers) {
   });
 }
 
+test("Gemini settings discovers text models beyond the two defaults", async () => {
+  const ids = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemma-3-27b-it"];
+  const harness = load({ geminiApiKey: "key" }, { geminiModels: ids.map(geminiModel) });
+  const ui = await openSettings(harness);
+  assert.deepEqual(ui.get("geminiModelSelect").options.map((option) => option.value), ids);
+});
+
+test("Gemini discovery excludes specialized media and non-generation models", async () => {
+  const excluded = ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-image", "gemini-2.5-flash-native-audio", "gemini-live-preview", "gemini-robotics-er", "gemini-computer-use-preview", "imagen-4", "veo-3"];
+  const harness = load({}, { geminiModels: [geminiModel("gemini-2.5-flash-lite"), ...excluded.map(geminiModel),
+    { name: "models/gemini-embedding", supportedGenerationMethods: ["embedContent"] },
+    { ...geminiModel("gemini-audio-only"), supportedOutputTypes: ["audio"] }] });
+  assert.deepEqual(plain((await harness.context.GeminiAI.testConnection("key")).models), ["gemini-2.5-flash-lite"]);
+});
+
+for (const id of ["gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemma-3-27b-it"]) {
+  test(`Gemini selected discovered model survives reopening and generates with ${id}`, async () => {
+    const options = { geminiModels: [geminiModel("gemini-2.5-flash"), { ...geminiModel(id), displayName: "Discovered text model" }] };
+    const first = load({ geminiApiKey: "key" }, options);
+    const ui = await openSettings(first);
+    const select = ui.get("geminiModelSelect");
+    assert.ok(select.options.some((option) => option.textContent === `Discovered text model (${id})`));
+    select.value = id;
+    await select.fire("change");
+    assert.equal(first.stored.geminiModel, id);
+    const reopened = load({ ...first.stored }, options);
+    assert.equal((await reopened.context.GeminiAI.getAiFix({})).usedModel, id);
+    const request = reopened.calls.find((call) => call.init?.method === "POST");
+    assert.ok(request.url.includes(`/models/${id}:generateContent`));
+    const payload = JSON.parse(request.init.body);
+    if (id.startsWith("gemma")) {
+      assert.equal(payload.generationConfig.responseSchema, undefined);
+      assert.equal(payload.generationConfig.responseMimeType, undefined);
+      assert.ok(payload.contents[0].parts[0].text.includes("Return only one JSON object"));
+    } else {
+      assert.equal(payload.generationConfig.responseMimeType, "application/json");
+      assert.equal(payload.generationConfig.responseSchema.type, "OBJECT");
+    }
+  });
+}
+
+test("Gemini prompt-based JSON accepts fenced output and skips thinking parts", async () => {
+  const harness = load({ geminiModel: "gemma-3-27b-it" }, { fetch: async (url, init) => init?.method === "POST"
+    ? response({ candidates: [{ content: { parts: [{ text: "Internal thought", thought: true }, { text: "```json\n" + JSON.stringify(recommendation) + "\n```" }] } }] })
+    : response({ models: [geminiModel("gemma-3-27b-it")] }) });
+  await harness.context.GeminiAI.testConnection("key");
+  assert.equal((await harness.context.GeminiAI.callApi({}, "key")).success, true);
+});
+
 test("OpenRouter excludes missing or incompatible text modalities", async () => {
   for (const entry of [
     { id: "openai/gpt-4.1" },
@@ -626,6 +675,18 @@ test("OpenRouter dropdown groups preferred and newly discovered models under one
   assert.deepEqual(groups[0].children.map((option) => option.value), ids.slice(0, 2));
   assert.deepEqual(groups[1].children.map((option) => option.value), ids.slice(2));
   assert.equal(harness.stored.openRouterModel, "openai/gpt-4.1-mini");
+});
+
+test("OpenRouter dropdown separates free models from paid vendor groups", async () => {
+  const models = [routerModel("openai/gpt-4.1-mini"), routerModel("google/gemma:free"), routerModel("openrouter/free"),
+    { ...routerModel("vendor/zero-cost"), pricing: { prompt: "0", completion: "0" } }];
+  const harness = load({ aiProvider: "openrouter", openRouterApiKey: "key", openRouterModel: "openai/gpt-4.1-mini" }, { routerModels: models });
+  const ui = await openSettings(harness);
+  const select = ui.get("openRouterModelSelect");
+  assert.deepEqual(select.children.map((group) => group.label), ["Free models", "OpenAI"]);
+  assert.deepEqual(select.children[0].children.map((option) => option.value), ["google/gemma:free", "openrouter/free", "vendor/zero-cost"]);
+  assert.deepEqual(select.children[1].children.map((option) => option.value), ["openai/gpt-4.1-mini"]);
+  assert.equal(select.value, "openai/gpt-4.1-mini");
 });
 
 test("a cached fix for an undiscovered saved model needs no network discovery", async () => {

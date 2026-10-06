@@ -1,6 +1,6 @@
 # AI recommendation model policy
 
-The shared policy lives in `scripts/ai-model-policy.js`. OpenRouter uses capability-based discovery, native structured output when available, and prompt-based JSON otherwise. Direct Gemini retains its reviewed structured-output model policy.
+The shared policy lives in `scripts/ai-model-policy.js`. Both providers discover compatible text models, use native structured output where supported, and use prompt-based JSON otherwise.
 
 ## OpenRouter text models
 
@@ -35,7 +35,9 @@ The in-memory OpenRouter catalog starts with the previously reviewed default IDs
 
 ## Direct Gemini
 
-Direct Gemini still supports exactly `gemini-2.5-flash` and `gemini-2.5-pro`, intersected with discovered models supporting `generateContent`. It sends `generationConfig.responseMimeType: "application/json"` and `responseSchema`. Google's [Generate Content structured-output documentation](https://ai.google.dev/gemini-api/docs/generate-content/structured-output) lists both models as supporting this schema's object, string, array, required-property and enum features.
+Direct Gemini registers all discovered Gemini and Gemma text models advertising `generateContent`. The two reviewed defaults, `gemini-2.5-flash` and `gemini-2.5-pro`, remain selection priorities rather than an allowlist. Other entries follow in ID order, using the API's `displayName` in settings. Specialized image, audio, TTS, live, robotics, and computer-use IDs are excluded, as are explicit output types without text. Google's [models.list](https://ai.google.dev/api/models) does not consistently supply modality or structured-output capabilities, so this classification uses known family names and must be extended when new specialized families appear.
+
+Standard Gemini 2.5 and Gemini 3 Flash/Pro families send `generationConfig.responseMimeType: "application/json"` and `responseSchema`, following Google's [structured-output documentation](https://ai.google.dev/gemini-api/docs/structured-output). Other discovered text models, including Gemma, receive the JSON contract in the prompt without unsupported native-schema parameters. Responses are validated locally; fenced JSON and multiple text parts are accepted, and thinking parts are excluded. Unknown models must be discovered before preference writes or generation; a new script context rediscovers a saved non-default model after a cache miss.
 
 Gemini follows every `nextPageToken` using `pageToken`, as described by [models.list](https://ai.google.dev/api/models). Malformed, failed, or repeated-token pages invalidate the complete discovery; partial results never reach selection. Gemini's `models/` ID prefix is normalized before matching.
 

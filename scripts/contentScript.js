@@ -1503,12 +1503,33 @@ async function errorPopupOpen(MessageGuid) {
     status: customHeaders.Status,
     customstatus: customHeaders.CustomStatus,
     duration: formatDuration(stepStop - stepStart),
+    logStart: customHeaders.LogStart,
+    logEnd: customHeaders.LogEnd,
     errors: errorDetails,
     property: propertyArray,
     diagnosticProperties: customHeaders?.CustomHeaderProperties?.results || [],
     step: resp?.find((step) => step.Error),
     rawErrors: (resp || []).filter((step) => step.Error).map((step) => step.Error),
+    failedSteps: (resp || []).filter((step) => step.Error),
   };
+}
+async function copyErrorContext(rawContext, button) {
+  const originalLabel = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "Preparing context...";
+  try {
+    // No model request or navigation: only existing evidence and selective CPI source reads.
+    const raw = typeof rawContext === "function" ? await rawContext() : rawContext;
+    const context = await AiErrorContext.collect(raw);
+    const report = AiErrorContext.buildClipboardReport(context);
+    await navigator.clipboard.writeText(report);
+    showToast("Error context copied. Paste it into your chat.");
+  } catch (error) {
+    showToast("Unable to copy error context. Check clipboard permissions and try again.", "Copy failed", "warning");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = originalLabel;
+  }
 }
 async function popupTable(message, onErrorData) {
   let data = await errorPopupOpen(message);
@@ -1545,6 +1566,9 @@ async function popupTable(message, onErrorData) {
     <button class="ui purple button compact fluid cpiHelper_getAiRecommendationBtn" data-message-guid="${message}">
       <i class="magic icon"></i> Fix with AI
     </button>
+    <button type="button" class="ui button compact fluid cpiHelper_copyErrorContextBtn" data-message-guid="${message}" style="margin-top: 6px;" title="Copy a structured troubleshooting report to paste into your chat">
+      <i class="copy icon"></i> Copy error context
+    </button>
   </td></tr>`;
   popupHTML += `</tbody></table>`;
   return popupHTML;
@@ -1574,23 +1598,35 @@ function apireserror(message) {
             },
             message: messageHtml,
             onVisible: () => {
+              const errData = errorData;
+              const rawContext = {
+                errorMessage: (errData.rawErrors || errData.errors).join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,
+                status: errData.status,
+                customStatus: errData.customstatus,
+                stackTrace: (errData.rawErrors || errData.errors).join("\n"),
+                step: errData.step,
+                adapterType: errData.step?.AdapterType,
+                properties: errData.diagnosticProperties,
+                messageGuid: message,
+                integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null,
+                duration: errData.duration,
+                logStart: errData.logStart,
+                logEnd: errData.logEnd,
+                failedSteps: errData.failedSteps,
+              };
+              document.querySelectorAll(".cpiHelper_copyErrorContextBtn").forEach((btn) => {
+                if (btn.getAttribute("data-message-guid") !== message) return;
+                btn.onclick = (event) => {
+                  event.stopPropagation();
+                  copyErrorContext(rawContext, btn);
+                };
+              });
               document.querySelectorAll(".cpiHelper_getAiRecommendationBtn").forEach((btn) => {
                 if (btn.getAttribute("data-message-guid") !== message) return;
                 btn.onclick = async (e) => {
                   e.stopPropagation();
-                  const errData = errorData;
                   if (typeof GeminiAI !== "undefined") {
-                    GeminiAI.handleGetRecommendation({
-                      errorMessage: (errData.rawErrors || errData.errors).join("\n") || `CPI Error (Status: ${errData.status}, CustomStatus: ${errData.customstatus})`,
-                      status: errData.status,
-                      customStatus: errData.customstatus,
-                        stackTrace: (errData.rawErrors || errData.errors).join("\n"),
-                      step: errData.step,
-                      adapterType: errData.step?.AdapterType,
-                      properties: errData.diagnosticProperties,
-                      messageGuid: message,
-                      integrationFlowName: typeof cpiData !== "undefined" ? cpiData.integrationFlowId : null
-                    });
+                    GeminiAI.handleGetRecommendation(rawContext);
                   } else {
                     alert("Gemini AI module is loading or unavailable.");
                   }

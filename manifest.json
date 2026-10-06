@@ -19,7 +19,7 @@
     "https://generativelanguage.googleapis.com/*",
     "https://openrouter.ai/*"
   ],
-  "permissions": ["storage"],
+  "permissions": ["storage", "clipboardWrite"],
   "content_scripts": [
     {
       "matches": [
