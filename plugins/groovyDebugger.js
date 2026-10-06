@@ -293,9 +293,15 @@ function resetGroovyHighlighting() {
   groovyOriginalHandlers.clear();
 }
 
-async function getArtifactIdDirectly() {
+async function getArtifactIdDirectly(signal) {
+  async function read(url, useCache, accept) {
+    if (!signal) return makeCallPromise("GET", url, useCache, accept, null, null, null, true);
+    const response = await fetch(url, { signal, ...(accept ? { headers: { Accept: accept } } : {}) });
+    if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+    return response.text();
+  }
   try {
-    const listResponse = await makeCallPromise("GET", "/" + cpiData.urlExtension + "Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentsListCommand", false, null, null, null, null, true);
+    const listResponse = await read("/" + cpiData.urlExtension + "Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentsListCommand", false);
     const listData = new XmlToJson().parse(listResponse)["com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentsListResponse"];
     const artifact = Array.isArray(listData.artifactInformations)
       ? listData.artifactInformations.find((e) => e.symbolicName === cpiData.integrationFlowId)
@@ -308,15 +314,10 @@ async function getArtifactIdDirectly() {
     }
 
     if (cpiData.cpiPlatform === "neo") {
-      const detailResponse = await makeCallPromise(
-        "GET",
+      const detailResponse = await read(
         "/" + cpiData.urlExtension + "Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentDetailCommand?artifactId=" + artifact.id,
         60,
-        "application/json",
-        null,
-        null,
-        null,
-        true
+        "application/json"
       );
       return JSON.parse(detailResponse).artifactInformation.id;
     }

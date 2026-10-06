@@ -1,6 +1,7 @@
 /** Select diagnostic evidence locally before sending a compact request to an LLM. */
 var AiErrorContext = (function () {
   const MAX_CONTEXT_CHARS = 8000;
+  const SCRIPT_SOURCE_LOOKUP_TIMEOUT_MS = 10000;
   const sensitiveName = /authorization|cookie|password|passwd|pwd|secret|token|credential|api[-_]?key|private[-_]?key/i;
 
   function redact(value) {
@@ -203,13 +204,16 @@ var AiErrorContext = (function () {
       return context;
     }
     const knownElement = matchingDesign ? design.groovyElements?.find((item) => item.id === stepId) : null;
-    const artifact = typeof cpiData !== "undefined" && raw.integrationFlowName === cpiData.integrationFlowId ? cpiData.flowData?.artifactInformation : null;
-    const artifactId = matchingDesign ? design.artifactId : artifact?.id;
-    if (!artifactId || typeof resolveScriptUrl !== "function") return context;
+    const matchingArtifact = typeof cpiData !== "undefined" && raw.integrationFlowName === cpiData.integrationFlowId;
+    let artifactId = matchingDesign ? design.artifactId : null;
+    if (typeof resolveScriptUrl !== "function" || (!artifactId && (!matchingArtifact || typeof getArtifactIdDirectly !== "function"))) return context;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1500);
+    const timer = setTimeout(() => controller.abort(), SCRIPT_SOURCE_LOOKUP_TIMEOUT_MS);
     try {
-      // At most two CPI reads under one deadline, with no extra LLM call.
+      // Runtime metadata can contain a symbolic ID; design APIs require the resolved artifact ID.
+      // Resolve the ID and source under one deadline, with no extra LLM call.
+      if (!artifactId) artifactId = await getArtifactIdDirectly(controller.signal);
+      if (!artifactId) return context;
       // Reuse a loaded model when available; otherwise resolve this step only.
       if (!model && !knownElement) {
         const designResponse = await fetch("/api/1.0/iflows/" + encodeURIComponent(artifactId), { signal: controller.signal });
@@ -232,7 +236,9 @@ var AiErrorContext = (function () {
         context.scriptName = scriptPath;
       }
     } catch (_) {
-      context.contextNote = "Script source lookup failed or exceeded 1.5 seconds";
+      context.contextNote = controller.signal.aborted
+        ? `Script source lookup exceeded ${SCRIPT_SOURCE_LOOKUP_TIMEOUT_MS / 1000} seconds`
+        : "Script source lookup failed";
     } finally {
       clearTimeout(timer);
     }

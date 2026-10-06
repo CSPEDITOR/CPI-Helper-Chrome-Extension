@@ -17,6 +17,12 @@ function clipboardEvidence(report) {
   return JSON.parse(report.split("```json\n")[1].split("\n```")[0]);
 }
 
+function loadScriptResolvers(context) {
+  const debuggerSource = fs.readFileSync(path.join(__dirname, "..", "plugins", "groovyDebugger.js"), "utf8");
+  vm.runInContext(debuggerSource.slice(debuggerSource.indexOf("async function getArtifactIdDirectly("), debuggerSource.indexOf("function extractGroovyElements(")), context);
+  vm.runInContext(debuggerSource.slice(debuggerSource.indexOf("function resolveScriptUrl("), debuggerSource.indexOf("async function resolveTransferData(")), context);
+}
+
 test("clipboard report preserves extensive evidence beyond the compact model request", () => {
   const context = load();
   const raw = {
@@ -242,7 +248,7 @@ test("one selective script lookup uses the matched design and aborts slow fetche
   });
   const result = await context.AiErrorContext.collect({ errorMessage: "Groovy failure", messageGuid: "msg", step: { ModelStepId: "step" } });
   assert.equal(calls, 1);
-  assert.match(result.contextNote, /1.5 seconds/);
+  assert.match(result.contextNote, /exceeded 10 seconds/);
 });
 
 test("cache identity changes with source evidence and observed version", async () => {
@@ -261,6 +267,7 @@ test("a Groovy failure can selectively resolve source without enabling the debug
   const calls = [];
   const context = load({
     cpiData: { integrationFlowId: "Flow", flowData: { artifactInformation: { id: "artifact" } } },
+    getArtifactIdDirectly: async () => "artifact",
     window: { location: { hostname: "tenant" } },
     resolveScriptUrl: (info) => { assert.equal(info.scriptPath, "script.groovy"); return "/script"; },
     fetch: async (url) => {
@@ -274,4 +281,86 @@ test("a Groovy failure can selectively resolve source without enabling the debug
   const prepared = context.AiErrorContext.build(raw);
   assert.equal(JSON.stringify(prepared).includes("secret"), false);
   assert.match(prepared.diagnostics.script.version, /unverified/);
+});
+
+for (const platform of ["cf", "neo"]) test(`copy context resolves the design UUID and includes source after a slow ${platform} lookup`, async () => {
+  const calls = [];
+  let elapsed = 0;
+  let deadline;
+  let abortLookup;
+  let timerCleared = false;
+  const designId = "00000000-0000-4000-8000-000000000001";
+  const urlExtension = platform === "neo" ? "itspaces/" : "";
+  const listUrl = "/" + urlExtension + "Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentsListCommand";
+  const detailUrl = "/" + urlExtension + "Operations/com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentDetailCommand?artifactId=runtime-id";
+  const scriptSource = "def processData(message) {\nmessagee.getBody()\n}";
+  const context = load({
+    cpiData: { integrationFlowId: "ERROR_FLOW_1_Groovy", cpiPlatform: platform, urlExtension, flowData: { artifactInformation: { id: "ERROR_FLOW_1_Groovy" } } },
+    window: { location: { hostname: "tenant" } },
+    log: { error() {} },
+    setTimeout: (handler, delay) => { abortLookup = handler; deadline = delay; return 1; },
+    clearTimeout: () => { timerCleared = true; },
+    XmlToJson: class {
+      parse() {
+        return { "com.sap.it.op.tmn.commands.dashboard.webui.IntegrationComponentsListResponse": {
+          artifactInformations: platform === "neo" ? { symbolicName: "ERROR_FLOW_1_Groovy", id: "runtime-id" } : [{ symbolicName: "AnotherFlow", id: "other-id" }, { symbolicName: "ERROR_FLOW_1_Groovy", id: designId }],
+        } };
+      }
+    },
+    fetch: async (url, options) => {
+      calls.push(url);
+      assert.ok(options.signal instanceof AbortSignal);
+      // Simulate measured tenant latency without slowing down the test suite.
+      elapsed += url === listUrl ? 1100 : 500;
+      if (elapsed >= deadline) abortLookup();
+      if (options.signal.aborted) throw new Error("aborted");
+      if (url === listUrl) return { ok: true, text: async () => "<IntegrationComponentsListResponse/>" };
+      if (url === detailUrl) {
+        assert.equal(options.headers.Accept, "application/json");
+        return { ok: true, text: async () => JSON.stringify({ artifactInformation: { id: designId } }) };
+      }
+      if (url === "/api/1.0/iflows/" + designId) return { ok: true, json: async () => ({ propertyViewModel: { listOfDefaultFlowElementModel: [
+        { id: "CallActivity_9", displayName: "Groovy Script 1", allAttributes: { script: { value: "/script/script1.groovy" } } },
+      ] } }) };
+      if (url === `https://tenant/api/1.0/iflows/${designId}/script//script1.groovy`) return { ok: true, json: async () => ({ content: scriptSource }) };
+      return { ok: false, status: 500 };
+    },
+  });
+  loadScriptResolvers(context);
+  const raw = await context.AiErrorContext.collect({ errorMessage: "No such property: messagee @ line 2 in script1.groovy", integrationFlowName: "ERROR_FLOW_1_Groovy", messageGuid: "msg", step: { ModelStepId: "CallActivity_9" } });
+  const evidence = clipboardEvidence(context.AiErrorContext.buildClipboardReport(raw));
+  assert.equal(raw.scriptSource, scriptSource);
+  assert.match(evidence.diagnostics.script.sourceWithLineNumbers, /2: messagee.getBody\(\)/);
+  assert.equal(evidence.diagnostics.missing.includes("Failing script source unavailable"), false);
+  assert.ok(elapsed > 1500, "The complete lookup must exceed the previous timeout");
+  assert.equal(timerCleared, true);
+  assert.deepEqual(calls, [listUrl, ...(platform === "neo" ? [detailUrl] : []), "/api/1.0/iflows/" + designId, `https://tenant/api/1.0/iflows/${designId}/script//script1.groovy`]);
+});
+
+test("artifact resolution shares the source lookup deadline and preserves partial context on timeout", async () => {
+  let calls = 0;
+  let deadline;
+  const context = load({
+    cpiData: { integrationFlowId: "Flow", cpiPlatform: "cf", urlExtension: "" },
+    window: { location: { hostname: "tenant" } },
+    log: { error() {} },
+    setTimeout: (handler, delay) => { deadline = delay; queueMicrotask(handler); return 1; }, clearTimeout() {},
+    fetch: async (url, { signal }) => {
+      calls++;
+      return new Promise((resolve, reject) => {
+        if (signal.aborted) reject(new Error("aborted"));
+        else signal.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    },
+  });
+  loadScriptResolvers(context);
+  const raw = { errorMessage: "Groovy failure", integrationFlowName: "Flow", messageGuid: "msg", step: { ModelStepId: "step" } };
+  const result = await context.AiErrorContext.collect(raw);
+  assert.equal(calls, 1);
+  assert.equal(deadline, 10000);
+  assert.equal(result.errorMessage, raw.errorMessage);
+  assert.match(result.contextNote, /exceeded 10 seconds/);
+  assert.equal(result.scriptSource, undefined);
+  await context.AiErrorContext.collect({ ...raw, integrationFlowName: "AnotherFlow" });
+  assert.equal(calls, 1, "Must not resolve a different flow using the current page");
 });
