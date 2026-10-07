@@ -333,6 +333,7 @@ var AiErrorContext = (function () {
     data.diagnostics.nearbySteps = detail(raw.nearbySteps || []);
     data.diagnostics.failedSteps = detail(raw.failedSteps || []);
     if (raw.payload) data.diagnostics.payloadStructure = payloadShape(raw.payload, true);
+    if (raw.payload) data.diagnostics.payload = text(raw.payload, 40000);
     for (const [field, label] of [
       ["properties", "Exchange properties"],
       ["headers", "Message headers"],
@@ -346,7 +347,7 @@ var AiErrorContext = (function () {
     data.evidenceNotes = [
       "This is a snapshot of the selected failed message/step, not live access to the SAP tenant or the complete integration flow.",
       "Credentials are filtered by name and common secret patterns are redacted. Other business data may remain; review before sharing.",
-      "Payload business values are omitted; only available structure is included.",
+      "Available payload values are included alongside the payload structure; common secret patterns are redacted and long payloads may be truncated.",
       "Current design source and artifact metadata do not prove which source/version ran. Treat unverified versions as unverified.",
       raw.contextNote ? text(raw.contextNote) : "Only available diagnostic evidence is included; empty fields are not proof that a setting or value was absent at runtime.",
       ...new Set(omissions),

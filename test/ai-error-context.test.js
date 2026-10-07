@@ -59,10 +59,37 @@ test("clipboard report redacts credentials in expanded and nested evidence", () 
     failedSteps: [{ RunStepProperties: { results: [{ Name: "accessToken", Value: "step-secret" }] } }],
     payload: '{"name":"business-value","password":"payload-secret"}',
   });
-  for (const secret of ["error-secret", "script-secret", "property-secret", "nested-secret", "token-secret", "header-secret", "config-secret", "url-secret", "query-secret", "step-secret", "business-value", "payload-secret"]) {
+  for (const secret of ["error-secret", "script-secret", "property-secret", "nested-secret", "token-secret", "header-secret", "config-secret", "url-secret", "query-secret", "step-secret", "payload-secret"]) {
     assert.equal(report.includes(secret), false, secret);
   }
   assert.match(clipboardEvidence(report).diagnostics.payloadStructure, /string/);
+  assert.match(clipboardEvidence(report).diagnostics.payload, /business-value/);
+});
+
+test("clipboard includes payload values while model evidence retains only structure", () => {
+  const context = load();
+  for (const payload of ['{"customer":{"id":42,"name":"Alice"}}', '<customer id="42"><name>Alice</name></customer>', 'Customer Alice, id 42']) {
+    const raw = { errorMessage: "JSON parse failure", payload };
+    const before = JSON.stringify(context.AiErrorContext.build(raw));
+    const data = clipboardEvidence(context.AiErrorContext.buildClipboardReport(raw));
+    assert.equal(data.diagnostics.payload, payload);
+    assert.equal(JSON.stringify(context.AiErrorContext.build(raw)), before);
+    assert.equal(context.AiErrorContext.build(raw).diagnostics.payload, undefined);
+    assert.equal(before.includes("Alice"), false);
+    assert.ok(data.diagnostics.payloadStructure);
+    if (payload.startsWith("{")) assert.deepEqual(JSON.parse(data.diagnostics.payloadStructure), { customer: { id: "number", name: "string" } });
+    if (payload.startsWith("<")) assert.equal(data.diagnostics.payloadStructure, "<customer><name></name></customer>");
+  }
+});
+
+test("clipboard marks oversized payload values and leaves unavailable payload absent", () => {
+  const context = load();
+  const data = clipboardEvidence(context.AiErrorContext.buildClipboardReport({ payload: "x".repeat(50000) }));
+  assert.match(data.diagnostics.payload, /TRUNCATED/);
+  assert.ok(data.evidenceNotes.some((note) => /truncated/.test(note)));
+  const missing = clipboardEvidence(context.AiErrorContext.buildClipboardReport({}));
+  assert.equal(missing.diagnostics.payload, undefined);
+  assert.ok(missing.diagnostics.missing.includes("Payload structure unavailable or not loaded"));
 });
 
 test("clipboard report marks unavailable and oversized evidence without invalid JSON", () => {
@@ -122,6 +149,7 @@ test("trace clipboard collection reads unopened evidence for the selected step a
   assert.match(raw.contextNote, /Before-step snapshot.*headers lookup failed/);
   const data = clipboardEvidence(context.AiErrorContext.buildClipboardReport(raw));
   assert.match(data.diagnostics.payloadStructure, /number/);
+  assert.equal(data.diagnostics.payload, raw.payload);
 });
 
 test("trace clipboard collection still obtains step logs when trace snapshots have expired", async () => {
