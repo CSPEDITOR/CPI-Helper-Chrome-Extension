@@ -326,9 +326,9 @@ async function openSettings(harness) {
   };
   harness.context.document = { getElementById: get, createElement: (tag) => new Element(tag), querySelectorAll: () => [] };
   const source = read("popup/popup.js");
-  const start = source.indexOf("  // AI provider and credential settings");
-  const end = source.indexOf("\nfunction addTenantUrls()", start);
-  vm.runInContext(`(async function () {\n${source.slice(start, end)})()`, harness.context);
+  const start = source.indexOf("function wireAiSettings() {");
+  const end = source.indexOf("\nfunction wireSettings(", start);
+  vm.runInContext(`${source.slice(start, end)}\nwireAiSettings();`, harness.context);
   await settle();
   return { get };
 }
@@ -1002,24 +1002,24 @@ test("trace Error button selects Fix with AI and retains the trace tabs on regen
   context.runId = "run";
   context.traceEvidence = new Map([["run:17", { headers: { CamelHttpResponseCode: "503" } }]]);
   context.n = 0;
-  context.targetElements = [{ Error: "Script failed", RunId: "run", ChildCount: 17 }];
-  context.objects = ["Properties", "Headers", "Body", "Log", "Info"].map((label, index) => ({ label, content: `${label} content`, active: index === 0 }));
+  context.element = { Error: "Script failed", RunId: "run", ChildCount: 17 };
+  context.objects = ["Properties", "Headers", "Body", "Response", "Log", "Info", "Changes"].map((label, index) => ({ label, content: `${label} content`, active: index === 0 }));
   const trace = read("scripts/inline-trace.js");
-  const start = trace.indexOf("            if (targetElements[n].Error) {");
-  vm.runInContext(trace.slice(start, trace.indexOf("            let label =", start)), context);
+  const start = trace.indexOf("      if (element.Error) {");
+  vm.runInContext(trace.slice(start, trace.indexOf("      return createTabHTML(objects,", start)), context);
   const ui = read("scripts/ui.js");
-  vm.runInContext(ui.slice(ui.indexOf("async function createTabHTML("), ui.indexOf("// Function to show license popup")), context);
+  vm.runInContext(ui.slice(ui.indexOf("async function fillTabContent("), ui.indexOf("// Function to show license popup")), context);
   const tabs = await context.createTabHTML(context.objects, "tracetab-17");
   const properties = tabs.children[2];
-  const errorButton = context.objects[5].content.children[1];
+  const errorButton = context.objects[7].content.children[1];
   context.runId = "different-run";
   context.childCount = 99;
   errorButton.onclick();
   await settle();
-  assert.equal(elements.get("tab-tracetab-17-6").checked, true);
+  assert.equal(elements.get("tab-tracetab-17-8").checked, true);
   assert.equal(elements.get("tab-tracetab-17-0").checked, false);
   assert.equal(properties.innerHTML, "Properties content");
-  const panel = elements.get("tracetab-17-6-content").children[0];
+  const panel = elements.get("tracetab-17-8-content").children[0];
   assert.match(panel.children[0].innerHTML, /Recommended Steps/);
   assert.equal(calls.length, 1);
   assert.match(JSON.parse(calls[0].init.body).messages[0].content, /"httpStatusCode":503/);
@@ -1027,7 +1027,7 @@ test("trace Error button selects Fix with AI and retains the trace tabs on regen
   assert.match(panel.children[0].innerHTML, /Recommended Steps/);
   assert.equal(calls.length, 2);
   assert.equal(properties.innerHTML, "Properties content");
-  await elements.get("tab-tracetab-17-6").click();
+  await elements.get("tab-tracetab-17-8").click();
   assert.equal(calls.length, 2, "revisiting the tab retains its recommendation");
 });
 
@@ -1087,7 +1087,8 @@ test("sidebar Fix with AI reuses the context already fetched for the error popup
     cpiData: { integrationFlowId: "Flow" },
     document: { querySelectorAll: () => [button] },
     GeminiAI: { handleGetRecommendation(value) { aiContext = value; } },
-    $: Object.assign(() => ({ toast() {}, hasClass: () => false }), { toast(options) { if (options.onVisible) tasks.push(Promise.resolve(options.onVisible())); } })
+    cpihCloseToasts() {},
+    cpihToast(options) { if (options.onVisible) tasks.push(Promise.resolve(options.onVisible())); }
   };
   vm.createContext(context);
   const source = read("scripts/contentScript.js");

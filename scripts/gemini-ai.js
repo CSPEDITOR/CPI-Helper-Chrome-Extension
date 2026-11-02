@@ -762,7 +762,7 @@ Please generate structured JSON with:
         </div>
       </div>
 
-      <div class="ui segment" style="background-color: var(--cpi-bg-secondary, #f9fafb); border-left: 4px solid #a333c8;">
+      <div class="ui segment" style="background-color: var(--cpih-bg-subtle, #f9fafb); border-left: 4px solid #a333c8;">
         <h4 class="ui header" style="color: #a333c8; margin-bottom: 5px;">Summary</h4>
         <p style="font-size: 1.05em; line-height: 1.4;">${htmlEscape(rec.summary || "No summary provided.")}</p>
       </div>

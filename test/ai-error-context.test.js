@@ -46,7 +46,8 @@ test("clipboard report preserves extensive evidence beyond the compact model req
   assert.equal(data.diagnostics.configuration.find((item) => item.name === "customOption").value.value, "custom");
   assert.equal(data.diagnostics.properties[0].value, "available evidence");
   assert.equal(data.diagnostics.failedSteps[0].ModelStepId, "step");
-  assert.match(report, /rank likely causes with supporting evidence/);
+  assert.match(report, /Keep the response short and focused/);
+  assert.match(report, /Clearly separate confirmed facts from assumptions/);
   assert.ok(data.evidenceNotes.includes(raw.contextNote));
 });
 
@@ -180,7 +181,7 @@ test("trace Error copy button retains its selected step and does not select the 
   let copied;
   const context = load({
     n: 0, childCount: 3, runId: "selected-run", objects: [], traceEvidence: new Map(),
-    targetElements: [{ Error: "failure", RunId: "selected-run", ChildCount: 3 }],
+    element: { Error: "failure", RunId: "selected-run", ChildCount: 3 },
     document: {
       createElement: () => ({ style: {}, classList: { add() {} }, children: [], appendChild(child) { this.children.push(child); } }),
       getElementById: () => assert.fail("Copy must not navigate to Fix with AI"),
@@ -189,8 +190,8 @@ test("trace Error copy button retains its selected step and does not select the 
     copyErrorContext: async (supplier) => { copied = await supplier(); },
   });
   const trace = source("inline-trace.js");
-  const start = trace.indexOf("            if (targetElements[n].Error) {");
-  vm.runInContext(trace.slice(start, trace.indexOf("            let label =", start)), context);
+  const start = trace.indexOf("      if (element.Error) {");
+  vm.runInContext(trace.slice(start, trace.indexOf("      return createTabHTML(objects,", start)), context);
   const copyButton = context.objects[0].content.children[2];
   assert.match(copyButton.innerHTML, /Copy error context/);
   context.runId = "other-run";
