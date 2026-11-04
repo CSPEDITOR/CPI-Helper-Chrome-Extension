@@ -51,7 +51,7 @@ test("clipboard report preserves extensive evidence beyond the compact model req
   assert.ok(data.evidenceNotes.includes(raw.contextNote));
 });
 
-test("clipboard report redacts credentials in expanded and nested evidence", () => {
+test("clipboard report redacts credentials outside the original payload", () => {
   const report = load().AiErrorContext.buildClipboardReport({
     errorMessage: "HTTP failure password=error-secret", scriptSource: 'def secret="script-secret"',
     properties: [{ Name: "password", Value: "property-secret" }, { Name: "safe", Value: { password: "nested-secret", note: "Bearer token-secret" } }],
@@ -60,11 +60,25 @@ test("clipboard report redacts credentials in expanded and nested evidence", () 
     failedSteps: [{ RunStepProperties: { results: [{ Name: "accessToken", Value: "step-secret" }] } }],
     payload: '{"name":"business-value","password":"payload-secret"}',
   });
-  for (const secret of ["error-secret", "script-secret", "property-secret", "nested-secret", "token-secret", "header-secret", "config-secret", "url-secret", "query-secret", "step-secret", "payload-secret"]) {
+  for (const secret of ["error-secret", "script-secret", "property-secret", "nested-secret", "token-secret", "header-secret", "config-secret", "url-secret", "query-secret", "step-secret"]) {
     assert.equal(report.includes(secret), false, secret);
   }
   assert.match(clipboardEvidence(report).diagnostics.payloadStructure, /string/);
-  assert.match(clipboardEvidence(report).diagnostics.payload, /business-value/);
+  assert.equal(clipboardEvidence(report).diagnostics.payload, '{"name":"business-value","password":"payload-secret"}');
+});
+
+test("clipboard preserves original JSON, XML and text payloads containing secret patterns", () => {
+  const context = load();
+  const payloads = [
+    '{\n  "password": "example-password", "token": "example-token", "url": "https://user:pass@example.com/?id=42&key=value"\n}',
+    '<root><password>example-password</password><token>example-token</token><apiKey>example-key</apiKey></root>',
+    'Authorization: Bearer example-token\r\nCookie: session=example-cookie\r\n-----BEGIN PRIVATE KEY-----\nexample-key\n-----END PRIVATE KEY-----',
+  ];
+  for (const payload of payloads) {
+    const data = clipboardEvidence(context.AiErrorContext.buildClipboardReport({ payload }));
+    assert.equal(data.diagnostics.payload, payload);
+    assert.ok(data.evidenceNotes.some((note) => /payload.*without secret masking/i.test(note)));
+  }
 });
 
 test("clipboard includes payload values while model evidence retains only structure", () => {

@@ -19,7 +19,10 @@ var AiErrorContext = (function () {
   }
 
   function clip(value, limit) {
-    const text = redact(value);
+    return clipText(redact(value), limit);
+  }
+
+  function clipText(text, limit) {
     if (JSON.stringify(text).length <= limit) return text;
     let size = limit - 20;
     let result;
@@ -270,11 +273,11 @@ var AiErrorContext = (function () {
     const data = build(raw);
     const omissions = [];
     let remaining = 120000;
-    function text(value, limit = 4000) {
+    function text(value, limit = 4000, maskSecrets = true) {
       const allowed = Math.min(limit, Math.max(0, remaining));
-      const original = redact(value);
+      const original = maskSecrets ? redact(value) : String(value ?? "");
       if (JSON.stringify(original).length > allowed) omissions.push("Some long evidence was truncated; marked [TRUNCATED].");
-      const result = allowed < 40 ? "[TRUNCATED]" : clip(original, allowed);
+      const result = allowed < 40 ? "[TRUNCATED]" : clipText(original, allowed);
       remaining -= JSON.stringify(result).length;
       return result;
     }
@@ -333,7 +336,7 @@ var AiErrorContext = (function () {
     data.diagnostics.nearbySteps = detail(raw.nearbySteps || []);
     data.diagnostics.failedSteps = detail(raw.failedSteps || []);
     if (raw.payload) data.diagnostics.payloadStructure = payloadShape(raw.payload, true);
-    if (raw.payload) data.diagnostics.payload = text(raw.payload, 40000);
+    if (raw.payload) data.diagnostics.payload = text(raw.payload, 40000, false);
     for (const [field, label] of [
       ["properties", "Exchange properties"],
       ["headers", "Message headers"],
@@ -346,8 +349,8 @@ var AiErrorContext = (function () {
     }
     data.evidenceNotes = [
       "This is a snapshot of the selected failed message/step, not live access to the SAP tenant or the complete integration flow.",
-      "Credentials are filtered by name and common secret patterns are redacted. Other business data may remain; review before sharing.",
-      "Available payload values are included alongside the payload structure; common secret patterns are redacted and long payloads may be truncated.",
+      "Outside the payload, credentials are filtered by name and common secret patterns are redacted. Other business data may remain; review before sharing.",
+      "Available payload values are included without secret masking alongside the payload structure; long payloads may be truncated.",
       "Current design source and artifact metadata do not prove which source/version ran. Treat unverified versions as unverified.",
       raw.contextNote ? text(raw.contextNote) : "Only available diagnostic evidence is included; empty fields are not proof that a setting or value was absent at runtime.",
       ...new Set(omissions),
