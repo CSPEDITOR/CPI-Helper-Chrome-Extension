@@ -104,6 +104,12 @@ test("jump: failed messages path is the one the popup always used", () => {
   assert.equal(new Set(CPIH_JUMP_TARGETS.map((t) => t.path)).size, CPIH_JUMP_TARGETS.length);
 });
 
+test("jump: JDBC Material toolbar shortcut includes the cloud integration runtime", () => {
+  const target = CPIH_JUMP_TARGETS.find((t) => t.label === "JDBC Material" && t.toolbar);
+  assert.ok(target);
+  assert.equal(target.path, "/shell/monitoring/JdbcMaterial/%7B%22edge%22%3A%7B%22runtimeLocationId%22%3A%22cloudintegration%22%7D%7D");
+});
+
 test("jump: iflow gets messages, deployment and package, in the monitor filter format", () => {
   const targets = cpihArtifactJumpTargets({ artifactId: "My_Flow", artifactType: "IFlow", packageId: "Pkg", runtimeLocationId: "cloudintegration" });
   assert.deepEqual(targets.map((t) => t.label), ["Messages of this artifact", "Deployment status", "Open package"]);

@@ -14,7 +14,7 @@ const CPIH_JUMP_TARGETS = [
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/SecurityMaterials", label: "Security Material", icon: "shield", toolbar: true },
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/Keystore", label: "Keystore", icon: "key", toolbar: true },
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/AccessPolicies", label: "Access Policies", icon: "shieldCheck" },
-  { group: "monitoring", area: "Monitor", path: "/shell/monitoring/JdbcMaterial", label: "JDBC Material", icon: "database" },
+  { group: "monitoring", area: "Monitor", path: "/shell/monitoring/JdbcMaterial/" + cpihMonitorFilter("cloudintegration", {}), label: "JDBC Material", icon: "database", toolbar: true },
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/Connectivity", label: "Connectivity Tests", icon: "plug", toolbar: true },
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/DataStores", label: "Data Stores", icon: "archive", toolbar: true },
   { group: "monitoring", area: "Monitor", path: "/shell/monitoring/Variables", label: "Variables", icon: "variable", toolbar: true },
